@@ -1,0 +1,21 @@
+{
+  "name": "demo-moderator",
+  "version": "1.0.0",
+  "description": "Demo moderator Electron app with configurable timer",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "download-model": "node download-model.js",
+    "setup": "npm install && npm run download-model"
+  },
+  "keywords": ["electron", "demo", "timer", "moderator"],
+  "author": "Demo App",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^27.0.0"
+  },
+  "dependencies": {
+    "wav": "^1.0.2"
+  }
+}

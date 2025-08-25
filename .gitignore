@@ -1,3 +1,9 @@
+kokoro_env
+models
+recordings
+temp
+.idea
+
 # Logs
 logs
 *.log
