@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  demo-moderator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8484:8484"    # Application port
+      - "11434:11434"  # Ollama API port
+    volumes:
+      - ./recordings:/app/recordings
+      - ./pregenerated_audio:/app/pregenerated_audio
+      - ollama_data:/root/.ollama
+    environment:
+      - DISPLAY=:99
+      - NODE_ENV=production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  ollama_data:
+    driver: local
