@@ -8,7 +8,7 @@ Kokoro TTS is used to convert text into natural-sounding speech audio files. Thi
 
 ## Prerequisites
 
-- Python 3.13 or higher
+- Python 3.9 - 3.12 (Python 3.13+ is not supported)
 - Virtual environment support (venv)
 - macOS with Homebrew (for current setup)
 
