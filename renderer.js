@@ -25,6 +25,11 @@ class DemoModerator {
         this.isRecording = false;
         this.currentRecordingPhase = null;
         
+        // Question generation properties
+        this.earlyQuestionGenerated = false;
+        this.earlyQuestionResult = null;
+        this.questionGenerationStarted = false;
+        
         // Transcription properties
         this.transcriptionStream = null;
         this.transcriptionRecorder = null;
@@ -209,6 +214,11 @@ class DemoModerator {
             // Clear demo transcript messages for fresh start
             this.demoTranscriptMessages = [];
             
+            // Reset question generation state for new demo
+            this.earlyQuestionGenerated = false;
+            this.earlyQuestionResult = null;
+            this.questionGenerationStarted = false;
+            
             // Announce the start of the phase
             const phaseNames = {
                 demo: 'demo',
@@ -367,6 +377,15 @@ class DemoModerator {
         if (newTimeRemaining !== this.timeRemaining) {
             this.timeRemaining = newTimeRemaining;
             this.updateDisplay();
+        }
+
+        // Trigger early question generation at 1 minute into demo phase
+        if (this.currentPhase === 'demo' && !this.questionGenerationStarted) {
+            const elapsed = this.totalTime - this.timeRemaining;
+            if (elapsed >= 60) { // 1 minute elapsed
+                this.questionGenerationStarted = true;
+                this.startEarlyQuestionGeneration();
+            }
         }
 
         // Only trigger phase completion when time first reaches 0 (not when negative)
@@ -735,6 +754,13 @@ class DemoModerator {
         if (!this.ttsEnabled) return;
         
         try {
+            // Check if this is a phrase that has pregenerated audio
+            const pregeneratedFile = this.getPregeneratedAudioFile(text);
+            if (pregeneratedFile) {
+                await this.playPregeneratedAudio(pregeneratedFile, text);
+                return;
+            }
+            
             // Pause transcription during TTS to avoid capturing our own speech
             const wasTranscribing = this.isTranscribing;
             if (wasTranscribing) {
@@ -755,6 +781,51 @@ class DemoModerator {
         } catch (error) {
             console.error('TTS Error:', error);
             this.isTTSSpeaking = false;
+        }
+    }
+
+    getPregeneratedAudioFile(text) {
+        // Map specific phrases to their pregenerated audio files
+        const pregeneratedPhrases = {
+            'starting demo phase. 2 minutes on the clock.': 'start_demo.wav',
+            'starting demo phase, recording 2 minutes on the clock': 'start_demo.wav',
+            'starting question phase': 'start_questions.wav',
+            'starting questions phase': 'start_questions.wav',
+            'now starting questions phase. 2 minutes on the clock.': 'start_questions.wav'
+        };
+        
+        // Normalize the text for comparison (lowercase, remove extra spaces)
+        const normalizedText = text.toLowerCase().replace(/\s+/g, ' ').trim();
+        
+        return pregeneratedPhrases[normalizedText] || null;
+    }
+
+    async playPregeneratedAudio(filename, originalText = '') {
+        try {
+            // Pause transcription during audio playback to avoid capturing our own speech
+            const wasTranscribing = this.isTranscribing;
+            if (wasTranscribing) {
+                this.pauseTranscription();
+            }
+            
+            this.isTTSSpeaking = true;
+            await ipcRenderer.invoke('play-pregenerated-audio', filename);
+            this.isTTSSpeaking = false;
+            
+            // Resume transcription after audio completes
+            if (wasTranscribing) {
+                // Wait a brief moment for audio to clear, then resume
+                setTimeout(() => {
+                    this.resumeTranscription();
+                }, 500);
+            }
+        } catch (error) {
+            console.error('Error playing pregenerated audio:', error);
+            this.isTTSSpeaking = false;
+            // Fallback to regular TTS if pregenerated audio fails
+            if (originalText) {
+                await ipcRenderer.invoke('tts-speak', originalText);
+            }
         }
     }
 
@@ -1207,6 +1278,11 @@ class DemoModerator {
 
         // Clear demo transcript messages on reset
         this.demoTranscriptMessages = [];
+        
+        // Reset question generation state
+        this.earlyQuestionGenerated = false;
+        this.earlyQuestionResult = null;
+        this.questionGenerationStarted = false;
 
         // Hide question display on reset
         this.dismissQuestion();
@@ -1254,11 +1330,36 @@ class DemoModerator {
         }
     }
 
+    async startEarlyQuestionGeneration() {
+        if (this.earlyQuestionGenerated) return;
+        
+        console.log('Starting early question generation at 1 minute mark...');
+        
+        try {
+            // Generate question in background without blocking
+            this.earlyQuestionResult = await this.generateQuestion();
+            this.earlyQuestionGenerated = true;
+            console.log('Early question generated successfully:', this.earlyQuestionResult);
+        } catch (error) {
+            console.error('Early question generation failed:', error);
+            this.earlyQuestionResult = null;
+        }
+    }
+
     async generateAndShowQuestion() {
         try {
-            const result = await this.generateQuestion();
+            let result;
             
-            if (result.success && result.question) {
+            // Use pre-generated question if available, otherwise generate new one
+            if (this.earlyQuestionGenerated && this.earlyQuestionResult) {
+                console.log('Using pre-generated question from early generation');
+                result = this.earlyQuestionResult;
+            } else {
+                console.log('No pre-generated question available, generating new one...');
+                result = await this.generateQuestion();
+            }
+            
+            if (result && result.success && result.question) {
                 // Display the question
                 this.showQuestion(result.question, result.fallback);
                 

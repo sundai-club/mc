@@ -143,6 +143,23 @@ ipcMain.handle('tts-get-config', async () => {
   return { enabled: ttsEnabled, voice: ttsVoice, useKokoro: ttsUseKokoro };
 });
 
+// Play pregenerated audio files
+ipcMain.handle('play-pregenerated-audio', async (event, filename) => {
+  const audioPath = path.join(__dirname, 'pregenerated_audio', filename);
+  
+  if (!fs.existsSync(audioPath)) {
+    throw new Error(`Pregenerated audio file not found: ${filename}`);
+  }
+  
+  try {
+    await playAudioFile(audioPath);
+    return { success: true };
+  } catch (error) {
+    console.error('Error playing pregenerated audio:', error);
+    throw error;
+  }
+});
+
 // Get available Kokoro voices
 ipcMain.handle('tts-get-kokoro-voices', async () => {
   try {
