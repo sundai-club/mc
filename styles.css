@@ -256,7 +256,10 @@ header h1 {
 
 .btn-icon {
     margin-right: 8px;
-    font-size: 1.1em;
+    font-size: 1.3em;
+    display: inline-flex;
+    align-items: center;
+    vertical-align: middle;
 }
 
 .phase-info {
@@ -732,10 +735,6 @@ header h1 {
     opacity: 0.5;
     cursor: not-allowed;
     transform: none;
-}
-
-.record-icon, .stop-icon {
-    font-size: 1.2em;
 }
 
 /* Responsive adjustments for recording section */
