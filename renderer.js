@@ -589,13 +589,11 @@ class DemoModerator {
     async completeSession() {
         clearInterval(this.timer);
         this.currentPhase = 'completed';
-        this.elements.currentPhase.textContent = 'READY';
-        this.elements.timeRemaining.textContent = '00:00';
-        this.elements.progressFill.style.width = '100%';
-        
+        this.updateDisplay(); // Properly update display and remove phase classes
+
         // Announce demo completion and time is up
         await this.speak('Demo complete! Time is up!');
-        
+
         this.elements.pauseBtn.disabled = true;
         this.elements.nextPhaseBtn.disabled = true;
     }
@@ -1295,12 +1293,10 @@ class DemoModerator {
         if (this.isTranscribing) {
             this.stopTranscription();
         }
-        
+
         clearInterval(this.timer);
         this.currentPhase = 'completed';
-        this.elements.currentPhase.textContent = 'READY';
-        this.elements.timeRemaining.textContent = '00:00';
-        this.elements.progressFill.style.width = '100%';
+        this.updateDisplay(); // Properly update display and remove phase classes
         
         this.elements.pauseBtn.disabled = true;
         this.elements.nextPhaseBtn.disabled = true;
