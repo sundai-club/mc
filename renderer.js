@@ -1193,7 +1193,7 @@ class DemoModerator {
             await this.startTranscription();
 
             // Update UI to final recording state
-            this.elements.recordIcon.textContent = '■';
+            this.elements.recordIcon.textContent = '⏹️';
             this.elements.recordText.textContent = 'Stop Demo';
             this.elements.masterRecordBtn.classList.remove('btn-record');
             this.elements.masterRecordBtn.classList.add('btn-stop');
@@ -1204,7 +1204,7 @@ class DemoModerator {
             alert('Failed to start recording: ' + error.message);
 
             // Restore button state on error
-            this.elements.recordIcon.textContent = '●';
+            this.elements.recordIcon.textContent = '🔴';
             this.elements.recordText.textContent = 'Start Demo';
             this.elements.masterRecordBtn.classList.remove('btn-stop');
             this.elements.masterRecordBtn.classList.add('btn-record');
@@ -1230,7 +1230,7 @@ class DemoModerator {
             this.completeSession();
             
             // Update UI
-            this.elements.recordIcon.textContent = '●';
+            this.elements.recordIcon.textContent = '🔴';
             this.elements.recordText.textContent = 'Start Demo';
             this.elements.masterRecordBtn.classList.remove('btn-stop');
             this.elements.masterRecordBtn.classList.add('btn-record');
