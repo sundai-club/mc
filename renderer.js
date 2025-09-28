@@ -86,7 +86,6 @@ class DemoModerator {
             timeRemaining: document.getElementById('timeRemaining'),
             progressFill: document.getElementById('progressFill'),
             pauseBtn: document.getElementById('pauseBtn'),
-            resetBtn: document.getElementById('resetBtn'),
             nextPhaseBtn: document.getElementById('nextPhaseBtn'),
             settingsBtn: document.getElementById('settingsBtn'),
             timerView: document.getElementById('timerView'),
@@ -127,7 +126,6 @@ class DemoModerator {
 
     setupEventListeners() {
         this.elements.pauseBtn.addEventListener('click', () => this.togglePause());
-        this.elements.resetBtn.addEventListener('click', () => this.resetTimer());
         this.elements.nextPhaseBtn.addEventListener('click', () => this.nextPhase());
         this.elements.settingsBtn.addEventListener('click', () => this.showSettings());
         this.elements.saveSettingsBtn.addEventListener('click', () => this.saveSettings());
@@ -192,7 +190,7 @@ class DemoModerator {
             this.updateTranscriptPlaceholder();
             this.hideSettings();
             if (this.currentPhase === 'ready') {
-                this.resetTimer();
+                this.updateDisplay();
             }
         } catch (error) {
             console.error('Failed to save settings:', error);
@@ -362,25 +360,6 @@ class DemoModerator {
         }, 100);
     }
 
-    resetTimer() {
-        clearInterval(this.timer);
-        this.currentPhase = 'ready';
-        this.phaseIndex = -1;
-        this.timeRemaining = 0;
-        this.totalTime = 0;
-        this.isPaused = false;
-        this.startTimestamp = null;
-        this.pausedDuration = 0;
-        this.lastPauseTime = null;
-        this.isOvertime = false;
-
-        this.elements.pauseBtn.disabled = true;
-        this.elements.pauseBtn.textContent = 'Pause';
-        this.elements.nextPhaseBtn.disabled = true;
-        this.elements.nextPhaseBtn.textContent = 'Next Phase';
-
-        this.updateDisplay();
-    }
 
     async nextPhase(skipAnnouncement = false, skipQuestionGeneration = false) {
         console.log('🔄 nextPhase called, currentPhase:', this.currentPhase, 'phaseIndex:', this.phaseIndex);
@@ -616,8 +595,6 @@ class DemoModerator {
             this.updateBackgroundColor('timer');
         }
         
-        // Update Reset button state - disable when ready/fresh (00:00)
-        this.elements.resetBtn.disabled = (this.currentPhase === 'ready');
 
         // Update Next Phase button text based on current state
         if (this.isOvertime && this.currentPhase === 'qa') {
@@ -1096,7 +1073,17 @@ class DemoModerator {
             await this.stopMasterRecording();
         } else if (this.currentPhase === 'completed') {
             // Reset to ready state after completion, then start new demo
-            this.resetTimer();
+            clearInterval(this.timer);
+            this.currentPhase = 'ready';
+            this.phaseIndex = -1;
+            this.timeRemaining = 0;
+            this.totalTime = 0;
+            this.isPaused = false;
+            this.startTimestamp = null;
+            this.pausedDuration = 0;
+            this.lastPauseTime = null;
+            this.isOvertime = false;
+            this.updateDisplay();
             this.clearTranscript();
             await this.startMasterRecording();
         } else {
@@ -1243,25 +1230,6 @@ class DemoModerator {
         }
     }
 
-    // Override resetTimer to stop recording if active
-    resetTimer() {
-        if (this.isRecording) {
-            this.stopRecording();
-        }
-        
-        clearInterval(this.timer);
-        this.currentPhase = 'ready';
-        this.phaseIndex = -1;
-        this.timeRemaining = 0;
-        this.totalTime = 0;
-        this.isPaused = false;
-
-        this.elements.pauseBtn.disabled = true;
-        this.elements.pauseBtn.textContent = 'Pause';
-        this.elements.nextPhaseBtn.disabled = true;
-
-        this.updateDisplay();
-    }
 
     // Override completeSession to stop recording if active
     completeSession() {
@@ -1495,53 +1463,6 @@ class DemoModerator {
         }
     }
 
-    // Override resetTimer to stop transcription if active
-    resetTimer() {
-        if (this.isRecording) {
-            this.stopRecording();
-        }
-        if (this.isTranscribing) {
-            this.stopTranscription();
-        }
-        
-        clearInterval(this.timer);
-        this.currentPhase = 'ready';
-        this.phaseIndex = -1;
-        this.timeRemaining = 0;
-        this.totalTime = 0;
-        this.isPaused = false;
-
-        this.elements.pauseBtn.disabled = true;
-        this.elements.pauseBtn.textContent = 'Pause';
-        this.elements.nextPhaseBtn.disabled = true;
-
-        // Clear demo transcript messages on reset
-        this.demoTranscriptMessages = [];
-        this.allTranscriptMessages = [];
-
-        // Reset question generation state
-        this.earlyQuestionGenerated = false;
-        this.earlyQuestionResult = null;
-        this.questionGenerationStarted = false;
-        this.pregeneratedQuestionAudio = null;
-
-        // Reset warning state
-        this.twentySecondWarningGiven = false;
-
-        // Clear auto-transition
-        this.clearAutoTransition();
-
-        // Reset completion announcement flag
-        this.sessionCompleteAnnouncementMade = false;
-
-        // Clear pregenerated audio cache
-        this.pregeneratedAudioCache.clear();
-
-        // Hide question display on reset
-        this.dismissQuestion();
-
-        this.updateDisplay();
-    }
 
     async generateQuestion() {
         try {
