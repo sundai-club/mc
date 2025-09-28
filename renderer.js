@@ -465,9 +465,9 @@ class DemoModerator {
             }
         }
 
-        // Give 20-second warning for both demo and Q&A phases
+        // Give 20-second warning for both demo and Q&A phases (trigger at 23 seconds)
         if ((this.currentPhase === 'demo' || this.currentPhase === 'qa') && !this.twentySecondWarningGiven && !this.isOvertime) {
-            if (this.timeRemaining <= 20 && this.timeRemaining > 0) {
+            if (this.timeRemaining <= 23 && this.timeRemaining > 0) {
                 this.twentySecondWarningGiven = true;
                 this.give20SecondWarning();
             }
