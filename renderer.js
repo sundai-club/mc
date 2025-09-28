@@ -1168,10 +1168,20 @@ class DemoModerator {
         try {
             // Stop transcription
             this.stopTranscription();
-            
+
             // Stop video recording
             this.stopRecording();
-            
+
+            // Reset question generation state to prevent multiple voices
+            this.earlyQuestionGenerated = false;
+            this.earlyQuestionResult = null;
+            this.questionGenerationStarted = false;
+            this.pregeneratedQuestionAudio = null;
+
+            // Clear any pending timers to prevent race conditions
+            clearInterval(this.timer);
+            this.timer = null;
+
             // Complete timer session
             this.completeSession();
             
