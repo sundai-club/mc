@@ -93,6 +93,7 @@ class DemoModerator {
             progressFill: document.getElementById('progressFill'),
             pauseBtn: document.getElementById('pauseBtn'),
             nextPhaseBtn: document.getElementById('nextPhaseBtn'),
+            nextPhaseText: document.getElementById('nextPhaseText'),
             settingsBtn: document.getElementById('settingsBtn'),
             timerView: document.getElementById('timerView'),
             settingsView: document.getElementById('settingsView'),
@@ -561,7 +562,7 @@ class DemoModerator {
             this.elements.currentPhase.textContent = 'Overtime - Questions Continue';
             this.elements.pauseBtn.disabled = false; // Keep controls active
             this.elements.nextPhaseBtn.disabled = false; // Keep Next Phase active to allow manual completion
-            this.elements.nextPhaseBtn.textContent = 'End Demo'; // Change text to be more clear
+            this.elements.nextPhaseText.textContent = 'End Demo'; // Change text to be more clear
 
             // Keep recording and transcription active
             return; // Exit early, don't proceed to session completion
@@ -649,9 +650,9 @@ class DemoModerator {
 
         // Update Next Phase button text based on current state
         if (this.isOvertime && this.currentPhase === 'qa') {
-            this.elements.nextPhaseBtn.textContent = 'End Demo';
+            this.elements.nextPhaseText.textContent = 'End Demo';
         } else {
-            this.elements.nextPhaseBtn.textContent = 'Next Phase';
+            this.elements.nextPhaseText.textContent = 'Next Phase';
         }
     }
 
