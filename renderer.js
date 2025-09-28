@@ -468,7 +468,7 @@ class DemoModerator {
                     };
                     // Use clearer announcements
                     if (this.currentPhase === 'demo') {
-                        this.speak(`Demo time starts now! ${Math.floor(this.timeRemaining / 60)} minutes on the timer.`);
+                        this.speak(`Let's begin your demo! You have ${Math.floor(this.timeRemaining / 60)} minutes to showcase your project.`);
                     } else {
                         this.speak(`Time for questions! You have ${Math.floor(this.timeRemaining / 60)} minutes for Q and A.`);
                     }
@@ -953,7 +953,6 @@ class DemoModerator {
 
         const dynamicPhrases = {
             [`let's begin your demo! you have ${demoMinutes} minutes to showcase your project.`]: `start_demo_${demoMinutes}m.wav`,
-            [`demo time starts now! ${demoMinutes} minutes on the timer.`]: `start_demo_${demoMinutes}m.wav`,
             [`time for questions! you have ${qaMinutes} minutes for q and a.`]: `start_questions_${qaMinutes}m.wav`
         };
 
@@ -1785,7 +1784,6 @@ class DemoModerator {
             // Dynamic phrases that depend on time settings
             const dynamicPhrases = [
                 { text: `Let's begin your demo! You have ${demoMinutes} minutes to showcase your project.`, filename: `start_demo_${demoMinutes}m.wav` },
-                { text: `Demo time starts now! ${demoMinutes} minutes on the timer.`, filename: `start_demo_${demoMinutes}m.wav` },
                 { text: `Time for questions! You have ${qaMinutes} minutes for Q and A.`, filename: `start_questions_${qaMinutes}m.wav` }
             ];
 
