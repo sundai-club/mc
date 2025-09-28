@@ -52,6 +52,9 @@ class DemoModerator {
         this.autoTransitionTimeout = null;
         this.autoTransitionTriggered = false;
 
+        // Phase transition guard to prevent concurrent transitions
+        this.isTransitioning = false;
+
         // Completion announcement tracking
         this.sessionCompleteAnnouncementMade = false;
 
@@ -266,6 +269,11 @@ class DemoModerator {
         this.pausedDuration = 0;
         this.lastPauseTime = null;
 
+        // Ensure no duplicate timers by clearing any existing interval
+        if (this.timer) {
+            clearInterval(this.timer);
+        }
+
         // Start the actual timer countdown
         this.timer = setInterval(() => {
             this.tick();
@@ -320,6 +328,11 @@ class DemoModerator {
         this.startTimestamp = Date.now();
         this.pausedDuration = 0;
 
+        // Ensure no duplicate timers by clearing any existing interval
+        if (this.timer) {
+            clearInterval(this.timer);
+        }
+
         this.updateDisplay();
         this.timer = setInterval(() => {
             this.tick();
@@ -354,6 +367,11 @@ class DemoModerator {
         this.elements.pauseBtn.disabled = false;
         this.elements.nextPhaseBtn.disabled = false;
 
+        // Ensure no duplicate timers by clearing any existing interval
+        if (this.timer) {
+            clearInterval(this.timer);
+        }
+
         this.updateDisplay();
         this.timer = setInterval(() => {
             this.tick();
@@ -364,17 +382,25 @@ class DemoModerator {
     async nextPhase(skipAnnouncement = false, skipQuestionGeneration = false) {
         console.log('🔄 nextPhase called, currentPhase:', this.currentPhase, 'phaseIndex:', this.phaseIndex);
 
-        // If we're in Questions Phase (last phase), complete the session
-        if (this.currentPhase === 'qa') {
-            console.log('⏹️ QA phase complete, ending session');
-            await this.speak('Questions time is up! Thanks for an amazing demo!');
-            this.completeSession();
+        // Prevent concurrent phase transitions
+        if (this.isTransitioning) {
+            console.log('🔒 Phase transition already in progress, ignoring call');
             return;
         }
+        this.isTransitioning = true;
 
-        // No longer need to handle demo overtime since demo always auto-transitions
-        
-        if (this.phaseIndex < this.phases.length - 1) {
+        try {
+            // If we're in Questions Phase (last phase), complete the session
+            if (this.currentPhase === 'qa') {
+                console.log('⏹️ QA phase complete, ending session');
+                await this.speak('Questions time is up! Thanks for an amazing demo!');
+                this.completeSession();
+                return;
+            }
+
+            // No longer need to handle demo overtime since demo always auto-transitions
+
+            if (this.phaseIndex < this.phases.length - 1) {
             const previousPhase = this.currentPhase;
 
             this.phaseIndex++;
@@ -393,6 +419,12 @@ class DemoModerator {
             this.twentySecondWarningGiven = false; // Reset warning for new phase
             this.elements.pauseBtn.disabled = false;
             this.elements.nextPhaseBtn.disabled = false;
+
+            // Ensure no duplicate timers by clearing any existing interval
+            if (this.timer) {
+                clearInterval(this.timer);
+            }
+
             this.timer = setInterval(() => {
                 this.tick();
             }, 100);
@@ -429,6 +461,10 @@ class DemoModerator {
             }
         } else {
             this.completeSession();
+        }
+        } finally {
+            // Always reset transition flag
+            this.isTransitioning = false;
         }
     }
 
