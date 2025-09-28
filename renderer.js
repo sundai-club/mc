@@ -418,11 +418,9 @@ class DemoModerator {
             if (previousPhase === 'demo' && this.currentPhase === 'qa' && !skipQuestionGeneration) {
                 // Start question generation immediately while speaking
                 const questionPromise = this.generateQuestion();
-                
-                // Dynamic announcements with minimal pauses
-                await new Promise(resolve => setTimeout(resolve, 400));
+
+                // Play announcements immediately without delays
                 await this.speak('Starting Question Phase');
-                await new Promise(resolve => setTimeout(resolve, 200));
                 await this.speak('Let me think of a great question for you...');
                 
                 // Wait for question generation to complete and show/speak it
