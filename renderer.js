@@ -223,8 +223,59 @@ class DemoModerator {
         this.elements.timerView.classList.add('active');
     }
 
+    prepareTimerForStart() {
+        if (this.currentPhase === 'ready' || this.currentPhase === 'completed') {
+            this.phaseIndex = 0;
+            this.currentPhase = this.phases[0];
+            this.timeRemaining = this.settings[this.currentPhase + 'Time'];
+            this.totalTime = this.timeRemaining;
+
+            // Clear demo transcript messages for fresh start
+            this.demoTranscriptMessages = [];
+            this.allTranscriptMessages = [];
+
+            // Reset question generation state for new demo
+            this.earlyQuestionGenerated = false;
+            this.earlyQuestionResult = null;
+            this.questionGenerationStarted = false;
+            this.pregeneratedQuestionAudio = null;
+
+            // Reset warning state for new demo
+            this.twentySecondWarningGiven = false;
+
+            // Clear auto-transition for new demo
+            this.clearAutoTransition();
+
+            // Reset completion announcement flag
+            this.sessionCompleteAnnouncementMade = false;
+
+            // Clear pregenerated audio cache to force regeneration with new time settings
+            this.pregeneratedAudioCache.clear();
+
+            // Prepare UI for demo start but don't start countdown yet
+            this.isPaused = false;
+            this.elements.pauseBtn.disabled = false;
+            this.elements.nextPhaseBtn.disabled = false;
+
+            // Show full time on display (but don't start countdown)
+            this.updateDisplay();
+        }
+    }
+
+    startTimerCountdown() {
+        // Set start timestamp for accurate timing and begin countdown
+        this.startTimestamp = Date.now();
+        this.pausedDuration = 0;
+        this.lastPauseTime = null;
+
+        // Start the actual timer countdown
+        this.timer = setInterval(() => {
+            this.tick();
+        }, 100); // More frequent updates to handle alt-tab better
+    }
+
     startTimer(skipAnnouncement = false) {
-        if (this.currentPhase === 'ready') {
+        if (this.currentPhase === 'ready' || this.currentPhase === 'completed') {
             this.phaseIndex = 0;
             this.currentPhase = this.phases[0];
             this.timeRemaining = this.settings[this.currentPhase + 'Time'];
@@ -339,13 +390,7 @@ class DemoModerator {
             return;
         }
 
-        // If we're in demo overtime, transition to Q&A phase
-        if (this.currentPhase === 'demo' && this.isOvertime) {
-            // Clear auto-transition since we're manually advancing
-            this.clearAutoTransition();
-            // Reset overtime flag for transition
-            this.isOvertime = false;
-        }
+        // No longer need to handle demo overtime since demo always auto-transitions
         
         if (this.phaseIndex < this.phases.length - 1) {
             const previousPhase = this.currentPhase;
@@ -418,7 +463,11 @@ class DemoModerator {
         // Calculate remaining time based on elapsed time
         let newTimeRemaining = this.totalTime - elapsed;
 
-        // Allow negative time for both demo and Q&A phases (overtime mode)
+        // For Demo Phase, don't allow negative time (auto-transitions to Q&A)
+        // For Q&A Phase, allow negative time (overtime mode)
+        if (this.currentPhase === 'demo') {
+            newTimeRemaining = Math.max(0, newTimeRemaining);
+        }
         
         // Only update if time actually changed (prevents unnecessary updates)
         if (newTimeRemaining !== this.timeRemaining) {
@@ -443,12 +492,16 @@ class DemoModerator {
             }
         }
 
-        // Only trigger phase completion announcement when time first reaches 0 (not when negative)
+        // Trigger phase completion when time reaches 0
         if (this.timeRemaining <= 0 && !this.isOvertime) {
-            // Both Demo and Questions phases now enter overtime mode instead of auto-advancing
-            this.isOvertime = true;
-            // Call phaseComplete but don't await it to avoid blocking the timer
-            this.phaseComplete().catch(console.error);
+            if (this.currentPhase === 'demo') {
+                // Demo phase: immediately transition to Q&A
+                this.phaseComplete().catch(console.error);
+            } else if (this.currentPhase === 'qa') {
+                // Q&A phase: enter overtime mode
+                this.isOvertime = true;
+                this.phaseComplete().catch(console.error);
+            }
         }
     }
 
@@ -460,20 +513,12 @@ class DemoModerator {
         };
 
         if (this.currentPhase === 'demo') {
-            // For Demo Phase: enter overtime mode instead of advancing to Q&A
+            // For Demo Phase: immediately transition to Q&A
             await this.speak(`Demo time is up! Great work!`);
 
-            // Continue timer in overtime mode - don't clear interval
-            this.elements.currentPhase.textContent = 'Demo Overtime';
-            this.elements.pauseBtn.disabled = false; // Keep controls active
-            this.elements.nextPhaseBtn.disabled = false; // Keep Next Phase active to allow manual advance
-            this.elements.nextPhaseBtn.textContent = 'Start Q&A'; // Change text to indicate manual transition
-
-            // Set up auto-transition to Q&A after 10 seconds
-            this.setupAutoTransition();
-
-            // Keep recording and transcription active
-            return; // Exit early, don't auto-advance to Q&A
+            // Transition immediately to Q&A phase
+            await this.nextPhase(false, false); // Don't skip announcement, allow question generation
+            return; // Exit early since we've transitioned
         } else if (this.currentPhase === 'qa') {
             // For Questions Phase: continue recording in overtime instead of ending session
             await this.speak(`Questions time is up! Thanks for an amazing demo!`);
@@ -547,10 +592,8 @@ class DemoModerator {
                 this.elements.timerDisplay.classList.add('questions-phase');
             }
             
-            // Override phase name if in overtime
-            if (this.isOvertime && this.currentPhase === 'demo') {
-                this.elements.currentPhase.textContent = 'Demo Overtime';
-            } else if (this.isOvertime && this.currentPhase === 'qa') {
+            // Override phase name if in Q&A overtime (demo no longer has overtime)
+            if (this.isOvertime && this.currentPhase === 'qa') {
                 this.elements.currentPhase.textContent = 'Overtime - Questions Continue';
             } else {
                 this.elements.currentPhase.textContent = phaseNames[this.currentPhase];
@@ -575,9 +618,7 @@ class DemoModerator {
         this.elements.resetBtn.disabled = (this.currentPhase === 'ready');
 
         // Update Next Phase button text based on current state
-        if (this.isOvertime && this.currentPhase === 'demo') {
-            this.elements.nextPhaseBtn.textContent = 'Start Q&A';
-        } else if (this.isOvertime && this.currentPhase === 'qa') {
+        if (this.isOvertime && this.currentPhase === 'qa') {
             this.elements.nextPhaseBtn.textContent = 'End Demo';
         } else {
             this.elements.nextPhaseBtn.textContent = 'Next Phase';
@@ -890,10 +931,12 @@ class DemoModerator {
             'twenty seconds remaining': 'twenty_seconds_warning.wav',
             'demo time is up! great work!': 'demo_complete.wav',
             'demo phase complete. time is up!': 'demo_complete.wav',
+            'demo complete! time is up!': 'demo_complete_alt.wav',
             'questions time is up! thanks for an amazing demo!': 'questions_complete.wav',
             'questions phase complete. time is up! thank you for an awesome demo!': 'questions_complete.wav',
             'let me think of a great question for you...': 'thinking_question.wav',
-            'let me think about the first question for you...': 'thinking_question.wav'
+            'let me think about the first question for you...': 'thinking_question.wav',
+            'starting question phase': 'starting_qa_phase.wav'
         };
 
         // Check for dynamic phrases first
@@ -1011,7 +1054,7 @@ class DemoModerator {
             };
 
             // Determine the current phase for filename
-            this.currentRecordingPhase = this.currentPhase === 'ready' ? 'demo' : this.currentPhase;
+            this.currentRecordingPhase = (this.currentPhase === 'ready' || this.currentPhase === 'completed') ? 'demo' : this.currentPhase;
             
             this.mediaRecorder.start();
             this.isRecording = true;
@@ -1045,7 +1088,7 @@ class DemoModerator {
 
     // Master recording toggle - starts/stops everything together
     async toggleMasterRecording() {
-        if (!this.isRecording && this.currentPhase === 'ready') {
+        if (!this.isRecording && (this.currentPhase === 'ready' || this.currentPhase === 'completed')) {
             // Start everything: timer, video recording, and transcription
             await this.startMasterRecording();
         } else if (this.isRecording) {
@@ -1074,28 +1117,44 @@ class DemoModerator {
         }
 
         try {
+            // Set up the timer display and UI immediately (but don't start countdown yet)
+            this.prepareTimerForStart();
+
+            // Add loading state to button
+            this.elements.recordIcon.textContent = '⏳';
+            this.elements.recordText.textContent = 'Starting...';
+            this.elements.masterRecordBtn.disabled = true;
+
             // Play announcement immediately using pre-generated audio
             const demoMinutes = Math.floor(this.settings.demoTime / 60);
             await this.speak(`Let's begin your demo! You have ${demoMinutes} minutes to showcase your project.`);
 
-            // Start timer (skip announcement since we just played it)
-            this.startTimer(true);
-            
+            // Now start the actual timer countdown
+            this.startTimerCountdown();
+
             // Start video recording
             await this.startRecording();
-            
+
             // Start transcription
             await this.startTranscription();
-            
-            // Update UI
+
+            // Update UI to final recording state
             this.elements.recordIcon.textContent = '■';
             this.elements.recordText.textContent = 'Stop Demo';
             this.elements.masterRecordBtn.classList.remove('btn-record');
             this.elements.masterRecordBtn.classList.add('btn-stop');
+            this.elements.masterRecordBtn.disabled = false;
             
         } catch (error) {
             console.error('Error starting master recording:', error);
             alert('Failed to start recording: ' + error.message);
+
+            // Restore button state on error
+            this.elements.recordIcon.textContent = '●';
+            this.elements.recordText.textContent = 'Start Demo';
+            this.elements.masterRecordBtn.classList.remove('btn-stop');
+            this.elements.masterRecordBtn.classList.add('btn-record');
+            this.elements.masterRecordBtn.disabled = false;
         }
     }
 
@@ -1711,8 +1770,8 @@ class DemoModerator {
             // Update settings form if it's open
             this.updateSettingsInputs();
 
-            // Pre-generate dynamic audio files for new time settings
-            await this.pregenerateDynamicAudioFiles();
+            // Pre-generate all audio files for new time settings
+            await this.pregenerateAllAudioFiles();
         } catch (error) {
             console.error('Auto-save failed:', error);
         }
@@ -1721,19 +1780,30 @@ class DemoModerator {
     async initializeAudioFiles() {
         // Wait a moment for TTS to fully initialize
         setTimeout(async () => {
-            await this.pregenerateDynamicAudioFiles();
+            await this.pregenerateAllAudioFiles();
         }, 1000);
     }
 
-    async pregenerateDynamicAudioFiles() {
+    async pregenerateAllAudioFiles() {
         try {
             const demoMinutes = Math.floor(this.settings.demoTime / 60);
             const qaMinutes = Math.floor(this.settings.qaTime / 60);
 
+            // Dynamic phrases that depend on time settings
             const dynamicPhrases = [
                 { text: `Let's begin your demo! You have ${demoMinutes} minutes to showcase your project.`, filename: `start_demo_${demoMinutes}m.wav` },
                 { text: `Demo time starts now! ${demoMinutes} minutes on the timer.`, filename: `start_demo_${demoMinutes}m.wav` },
                 { text: `Time for questions! You have ${qaMinutes} minutes for Q and A.`, filename: `start_questions_${qaMinutes}m.wav` }
+            ];
+
+            // Static phrases that never change
+            const staticPhrases = [
+                { text: 'Twenty seconds left!', filename: 'twenty_seconds_warning.wav' },
+                { text: 'Demo time is up! Great work!', filename: 'demo_complete.wav' },
+                { text: 'Demo complete! Time is up!', filename: 'demo_complete_alt.wav' },
+                { text: 'Questions time is up! Thanks for an amazing demo!', filename: 'questions_complete.wav' },
+                { text: 'Let me think of a great question for you...', filename: 'thinking_question.wav' },
+                { text: 'Starting Question Phase', filename: 'starting_qa_phase.wav' }
             ];
 
             console.log('Pre-generating audio files for immediate playback...');
@@ -1748,7 +1818,7 @@ class DemoModerator {
                     // Generate the actual audio file
                     const result = await ipcRenderer.invoke('generate-dynamic-audio', text, filename);
                     if (result.success) {
-                        console.log(`✓ Pre-generated audio: ${filename}`);
+                        console.log(`✓ Pre-generated dynamic audio: ${filename}`);
                     }
                 } catch (error) {
                     console.warn(`Failed to pre-generate ${filename}:`, error);
@@ -1756,9 +1826,27 @@ class DemoModerator {
                 }
             }
 
-            console.log('Audio pre-generation complete. Start Demo should now play immediately.');
+            // Pre-generate all static audio files
+            for (const { text, filename } of staticPhrases) {
+                try {
+                    // Cache the filename immediately for instant lookup
+                    const normalizedText = text.toLowerCase().replace(/\s+/g, ' ').trim();
+                    this.pregeneratedAudioCache.set(normalizedText, filename);
+
+                    // Generate the actual audio file
+                    const result = await ipcRenderer.invoke('generate-dynamic-audio', text, filename);
+                    if (result.success) {
+                        console.log(`✓ Pre-generated static audio: ${filename}`);
+                    }
+                } catch (error) {
+                    console.warn(`Failed to pre-generate ${filename}:`, error);
+                    // Keep the cache entry so it tries to play and falls back to TTS gracefully
+                }
+            }
+
+            console.log('Audio pre-generation complete. All transitions should now play immediately.');
         } catch (error) {
-            console.error('Error pre-generating dynamic audio files:', error);
+            console.error('Error pre-generating audio files:', error);
         }
     }
 
