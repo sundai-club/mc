@@ -1145,6 +1145,9 @@ class DemoModerator {
             // Clear transcript display for fresh start
             this.clearTranscript();
 
+            // Clear suggested question UI for fresh start
+            this.dismissQuestion();
+
             // Set up the timer display and UI immediately (but don't start countdown yet)
             this.prepareTimerForStart();
 
