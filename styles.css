@@ -149,14 +149,35 @@ header h1 {
 }
 
 .phase-indicator {
-    font-size: 1.5em;
-    font-weight: 500;
-    color: #667eea;
     margin-bottom: 20px;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 20px;
+}
+
+.phase-title {
+    font-size: 4.5em;
+    font-weight: 700;
+    color: #667eea;
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    text-shadow: 0 2px 4px rgba(102, 126, 234, 0.3);
+    margin-bottom: 10px;
+    transition: all 0.3s ease;
+}
+
+/* Phase-specific colors */
+.timer-display.demo-phase .phase-title {
+    color: #4CAF50;
+    text-shadow: 0 2px 4px rgba(76, 175, 80, 0.3);
+}
+
+.timer-display.questions-phase .phase-title {
+    color: #FF9800;
+    text-shadow: 0 2px 4px rgba(255, 152, 0, 0.3);
 }
 
 .time-display {
@@ -526,9 +547,12 @@ header h1 {
     .time-display {
         font-size: 3.5em;
     }
-    
+
+    .phase-title {
+        font-size: 2.5em;
+    }
+
     .phase-indicator {
-        flex-direction: column;
         gap: 15px;
     }
     

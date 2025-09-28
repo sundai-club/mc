@@ -611,8 +611,8 @@ class DemoModerator {
             // Don't return here, let the button state logic run below
         } else {
             const phaseNames = {
-                demo: 'Demo Phase',
-                qa: 'Questions Phase'
+                demo: 'DEMO TIME',
+                qa: 'Q&A TIME'
             };
             
             // Add appropriate phase class
@@ -624,7 +624,7 @@ class DemoModerator {
             
             // Override phase name if in Q&A overtime (demo no longer has overtime)
             if (this.isOvertime && this.currentPhase === 'qa') {
-                this.elements.currentPhase.textContent = 'Overtime - Questions Continue';
+                this.elements.currentPhase.textContent = 'OVERTIME';
             } else {
                 this.elements.currentPhase.textContent = phaseNames[this.currentPhase];
             }
