@@ -1138,7 +1138,7 @@ class DemoModerator {
             this.lastPauseTime = null;
             this.isOvertime = false;
             this.updateDisplay();
-            this.clearTranscript();
+            // UI already cleared when previous demo completed
             await this.startMasterRecording();
         } else {
             // Stop everything for any other state
@@ -1160,11 +1160,7 @@ class DemoModerator {
         try {
             console.log('🚀 Starting master recording...');
 
-            // Clear transcript display for fresh start
-            this.clearTranscript();
-
-            // Clear suggested question UI for fresh start
-            this.dismissQuestion();
+            // UI cleared when previous demo stopped, ready for fresh start
 
             // Set up the timer display and UI immediately (but don't start countdown yet)
             this.prepareTimerForStart();
@@ -1228,7 +1224,11 @@ class DemoModerator {
 
             // Complete timer session
             this.completeSession();
-            
+
+            // Clear UI for clean state
+            this.clearTranscript();
+            this.dismissQuestion();
+
             // Update UI
             this.elements.recordIcon.textContent = '🔴';
             this.elements.recordText.textContent = 'Start Demo';
@@ -1300,7 +1300,11 @@ class DemoModerator {
         clearInterval(this.timer);
         this.currentPhase = 'completed';
         this.updateDisplay(); // Properly update display and remove phase classes
-        
+
+        // Clear UI for clean state
+        this.clearTranscript();
+        this.dismissQuestion();
+
         this.elements.pauseBtn.disabled = true;
         this.elements.nextPhaseBtn.disabled = true;
     }
