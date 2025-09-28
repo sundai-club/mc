@@ -254,6 +254,11 @@ header h1 {
     transform: none;
 }
 
+.btn-icon {
+    margin-right: 8px;
+    font-size: 1.1em;
+}
+
 .phase-info {
     display: flex;
     gap: 20px;

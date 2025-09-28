@@ -262,7 +262,8 @@ class DemoModerator {
             // Prepare UI for demo start but don't start countdown yet
             this.isPaused = false;
             this.elements.pauseBtn.disabled = false;
-            this.elements.nextPhaseBtn.disabled = false;
+            // Only enable Next Phase button during Demo phase
+            this.elements.nextPhaseBtn.disabled = (this.currentPhase !== 'demo');
 
             // Show full time on display (but don't start countdown)
             this.updateDisplay();
@@ -331,7 +332,8 @@ class DemoModerator {
 
         this.isPaused = false;
         this.elements.pauseBtn.disabled = false;
-        this.elements.nextPhaseBtn.disabled = false;
+        // Only enable Next Phase button during Demo phase
+        this.elements.nextPhaseBtn.disabled = (this.currentPhase !== 'demo');
 
         // Set start timestamp for accurate timing
         this.startTimestamp = Date.now();
@@ -374,7 +376,8 @@ class DemoModerator {
         
         this.isPaused = false;
         this.elements.pauseBtn.disabled = false;
-        this.elements.nextPhaseBtn.disabled = false;
+        // Only enable Next Phase button during Demo phase
+        this.elements.nextPhaseBtn.disabled = (this.currentPhase !== 'demo');
 
         // Ensure no duplicate timers by clearing any existing interval
         if (this.timer) {
@@ -428,7 +431,8 @@ class DemoModerator {
             this.twentySecondWarningGiven = false; // Reset warning for new phase
             this.phaseCompletionTriggered = false; // Reset completion flag for new phase
             this.elements.pauseBtn.disabled = false;
-            this.elements.nextPhaseBtn.disabled = false;
+            // Only enable Next Phase button during Demo phase
+            this.elements.nextPhaseBtn.disabled = (this.currentPhase !== 'demo');
 
             // Ensure no duplicate timers by clearing any existing interval
             if (this.timer) {
