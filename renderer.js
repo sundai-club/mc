@@ -1117,12 +1117,6 @@ class DemoModerator {
         try {
             console.log('🚀 Starting master recording...');
 
-            // Play announcement IMMEDIATELY using pre-generated audio
-            const demoMinutes = Math.floor(this.settings.demoTime / 60);
-            console.log('🎤 About to speak start announcement...');
-            await this.speak(`Let's begin your demo! You have ${demoMinutes} minutes to showcase your project.`);
-            console.log('✅ Start announcement complete');
-
             // Clear transcript display for fresh start
             this.clearTranscript();
 
@@ -1133,6 +1127,12 @@ class DemoModerator {
             this.elements.recordIcon.textContent = '⏳';
             this.elements.recordText.textContent = 'Starting...';
             this.elements.masterRecordBtn.disabled = true;
+
+            // Play announcement immediately using pre-generated audio
+            const demoMinutes = Math.floor(this.settings.demoTime / 60);
+            console.log('🎤 About to speak start announcement...');
+            await this.speak(`Let's begin your demo! You have ${demoMinutes} minutes to showcase your project.`);
+            console.log('✅ Start announcement complete');
 
             // Now start the actual timer countdown
             console.log('⏰ Starting timer countdown...');
