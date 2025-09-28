@@ -623,6 +623,7 @@ header h1 {
     border-radius: 12px;
     background: #000;
     object-fit: cover;
+    transform: scaleX(-1);
 }
 
 .recording-status {
