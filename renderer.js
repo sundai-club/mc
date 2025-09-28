@@ -1116,6 +1116,10 @@ class DemoModerator {
 
         try {
             console.log('🚀 Starting master recording...');
+
+            // Clear transcript display for fresh start
+            this.clearTranscript();
+
             // Set up the timer display and UI immediately (but don't start countdown yet)
             this.prepareTimerForStart();
 
