@@ -37,10 +37,31 @@ class DemoModerator {
         this.availableCameras = [];
         this.selectedCameraId = null;
         this.demoTranscriptMessages = []; // Store demo-only transcript messages
+        this.allTranscriptMessages = []; // Store all transcript messages with timestamps
+
+        // Question generation properties
+        this.earlyQuestionGenerated = false;
+        this.earlyQuestionResult = null;
+        this.questionGenerationStarted = false;
+        this.pregeneratedQuestionAudio = null;
+
+        // Warning properties
+        this.twentySecondWarningGiven = false;
+
+        // Auto-transition properties
+        this.autoTransitionTimeout = null;
+        this.autoTransitionTriggered = false;
+
+        // Completion announcement tracking
+        this.sessionCompleteAnnouncementMade = false;
+
         // TTS properties
         this.ttsEnabled = true;
         this.ttsVoice = 'Samantha';
         this.isTTSSpeaking = false;
+
+        // Pregenerated audio cache
+        this.pregeneratedAudioCache = new Map();
         
         this.initializeElements();
         this.setupEventListeners();
@@ -50,9 +71,12 @@ class DemoModerator {
         this.enumerateMicrophones();
         this.enumerateCameras();
         this.loadTTSConfig();
-        
+
         // Set initial display and button states
         this.updateDisplay();
+
+        // Pre-generate dynamic audio files for current settings (after TTS is loaded)
+        this.initializeAudioFiles();
     }
 
     initializeElements() {
@@ -199,7 +223,7 @@ class DemoModerator {
         this.elements.timerView.classList.add('active');
     }
 
-    startTimer() {
+    startTimer(skipAnnouncement = false) {
         if (this.currentPhase === 'ready') {
             this.phaseIndex = 0;
             this.currentPhase = this.phases[0];
@@ -208,13 +232,35 @@ class DemoModerator {
             
             // Clear demo transcript messages for fresh start
             this.demoTranscriptMessages = [];
-            
-            // Announce the start of the phase
-            const phaseNames = {
-                demo: 'demo',
-                qa: 'questions'
-            };
-            this.speak(`Starting ${phaseNames[this.currentPhase]} phase. ${Math.floor(this.timeRemaining / 60)} minutes on the clock.`);
+            this.allTranscriptMessages = [];
+
+            // Reset question generation state for new demo
+            this.earlyQuestionGenerated = false;
+            this.earlyQuestionResult = null;
+            this.questionGenerationStarted = false;
+            this.pregeneratedQuestionAudio = null;
+
+            // Reset warning state for new demo
+            this.twentySecondWarningGiven = false;
+
+            // Clear auto-transition for new demo
+            this.clearAutoTransition();
+
+            // Reset completion announcement flag
+            this.sessionCompleteAnnouncementMade = false;
+
+            // Clear pregenerated audio cache to force regeneration with new time settings
+            this.pregeneratedAudioCache.clear();
+
+            // Announce the start of the phase (only if not skipped)
+            if (!skipAnnouncement) {
+                const demoMinutes = Math.floor(this.timeRemaining / 60);
+                if (this.currentPhase === 'demo') {
+                    this.speak(`Let's begin your demo! You have ${demoMinutes} minutes to showcase your project.`);
+                } else {
+                    this.speak(`Time for questions! You have ${demoMinutes} minutes for Q and A.`);
+                }
+            }
         }
 
         this.isPaused = false;
@@ -288,9 +334,17 @@ class DemoModerator {
     async nextPhase(skipAnnouncement = false, skipQuestionGeneration = false) {
         // If we're in Questions Phase (last phase), complete the session
         if (this.currentPhase === 'qa') {
-            await this.speak('Questions phase complete. Time is up! Thank you for an awesome demo!');
+            await this.speak('Questions time is up! Thanks for an amazing demo!');
             this.completeSession();
             return;
+        }
+
+        // If we're in demo overtime, transition to Q&A phase
+        if (this.currentPhase === 'demo' && this.isOvertime) {
+            // Clear auto-transition since we're manually advancing
+            this.clearAutoTransition();
+            // Reset overtime flag for transition
+            this.isOvertime = false;
         }
         
         if (this.phaseIndex < this.phases.length - 1) {
@@ -308,6 +362,7 @@ class DemoModerator {
             this.pausedDuration = 0;
             this.lastPauseTime = null;
             this.isOvertime = false;
+            this.twentySecondWarningGiven = false; // Reset warning for new phase
             this.elements.pauseBtn.disabled = false;
             this.elements.nextPhaseBtn.disabled = false;
             this.timer = setInterval(() => {
@@ -323,7 +378,7 @@ class DemoModerator {
                 await new Promise(resolve => setTimeout(resolve, 400));
                 await this.speak('Starting Question Phase');
                 await new Promise(resolve => setTimeout(resolve, 200));
-                await this.speak('Let me think about the first question for you...');
+                await this.speak('Let me think of a great question for you...');
                 
                 // Wait for question generation to complete and show/speak it
                 const questionResult = await questionPromise;
@@ -338,7 +393,12 @@ class DemoModerator {
                         demo: 'demo',
                         qa: 'questions'
                     };
-                    this.speak(`Now starting ${phaseNames[this.currentPhase]} phase. ${Math.floor(this.timeRemaining / 60)} minutes on the clock.`);
+                    // Use clearer announcements
+                    if (this.currentPhase === 'demo') {
+                        this.speak(`Demo time starts now! ${Math.floor(this.timeRemaining / 60)} minutes on the timer.`);
+                    } else {
+                        this.speak(`Time for questions! You have ${Math.floor(this.timeRemaining / 60)} minutes for Q and A.`);
+                    }
                 }
             }
         } else {
@@ -357,11 +417,8 @@ class DemoModerator {
         
         // Calculate remaining time based on elapsed time
         let newTimeRemaining = this.totalTime - elapsed;
-        
-        // For Demo Phase, don't allow negative time
-        if (this.currentPhase === 'demo') {
-            newTimeRemaining = Math.max(0, newTimeRemaining);
-        }
+
+        // Allow negative time for both demo and Q&A phases (overtime mode)
         
         // Only update if time actually changed (prevents unnecessary updates)
         if (newTimeRemaining !== this.timeRemaining) {
@@ -369,16 +426,29 @@ class DemoModerator {
             this.updateDisplay();
         }
 
-        // Only trigger phase completion when time first reaches 0 (not when negative)
-        if (this.timeRemaining <= 0 && !this.isOvertime) {
-            // For Demo Phase, always complete and move to next phase
-            // For Questions Phase, enter overtime mode
-            if (this.currentPhase === 'demo') {
-                this.phaseComplete();
-            } else if (this.currentPhase === 'qa') {
-                this.isOvertime = true;
-                this.phaseComplete();
+        // Trigger early question generation at 1 minute into demo phase
+        if (this.currentPhase === 'demo' && !this.questionGenerationStarted) {
+            const elapsed = this.totalTime - this.timeRemaining;
+            if (elapsed >= 60) { // 1 minute elapsed
+                this.questionGenerationStarted = true;
+                this.startEarlyQuestionGeneration();
             }
+        }
+
+        // Give 20-second warning for both demo and Q&A phases
+        if ((this.currentPhase === 'demo' || this.currentPhase === 'qa') && !this.twentySecondWarningGiven && !this.isOvertime) {
+            if (this.timeRemaining <= 20 && this.timeRemaining > 0) {
+                this.twentySecondWarningGiven = true;
+                this.give20SecondWarning();
+            }
+        }
+
+        // Only trigger phase completion announcement when time first reaches 0 (not when negative)
+        if (this.timeRemaining <= 0 && !this.isOvertime) {
+            // Both Demo and Questions phases now enter overtime mode instead of auto-advancing
+            this.isOvertime = true;
+            // Call phaseComplete but don't await it to avoid blocking the timer
+            this.phaseComplete().catch(console.error);
         }
     }
 
@@ -388,23 +458,34 @@ class DemoModerator {
             demo: 'demo',
             qa: 'questions'
         };
-        
-        if (this.currentPhase === 'qa') {
+
+        if (this.currentPhase === 'demo') {
+            // For Demo Phase: enter overtime mode instead of advancing to Q&A
+            await this.speak(`Demo time is up! Great work!`);
+
+            // Continue timer in overtime mode - don't clear interval
+            this.elements.currentPhase.textContent = 'Demo Overtime';
+            this.elements.pauseBtn.disabled = false; // Keep controls active
+            this.elements.nextPhaseBtn.disabled = false; // Keep Next Phase active to allow manual advance
+            this.elements.nextPhaseBtn.textContent = 'Start Q&A'; // Change text to indicate manual transition
+
+            // Set up auto-transition to Q&A after 10 seconds
+            this.setupAutoTransition();
+
+            // Keep recording and transcription active
+            return; // Exit early, don't auto-advance to Q&A
+        } else if (this.currentPhase === 'qa') {
             // For Questions Phase: continue recording in overtime instead of ending session
-            await this.speak(`${phaseNames[this.currentPhase]} phase complete. Time is up! Thank you for an awesome demo!`);
-            
+            await this.speak(`Questions time is up! Thanks for an amazing demo!`);
+
             // Continue timer in overtime mode - don't clear interval
             this.elements.currentPhase.textContent = 'Overtime - Questions Continue';
             this.elements.pauseBtn.disabled = false; // Keep controls active
             this.elements.nextPhaseBtn.disabled = false; // Keep Next Phase active to allow manual completion
             this.elements.nextPhaseBtn.textContent = 'End Demo'; // Change text to be more clear
-            
+
             // Keep recording and transcription active
             return; // Exit early, don't proceed to session completion
-        } else {
-            // For Demo Phase: proceed to next phase as normal
-            clearInterval(this.timer);
-            await this.speak(`${phaseNames[this.currentPhase]} phase complete. Time is up!`);
         }
         
         if (this.phaseIndex < this.phases.length - 1) {
@@ -418,7 +499,7 @@ class DemoModerator {
             if (isTransitioningFromDemo) {
                 // Brief pause then announce question thinking
                 await new Promise(resolve => setTimeout(resolve, 800));
-                await this.speak('Let me think about the first question for you...');
+                await this.speak('Let me think of a great question for you...');
                 await this.generateAndShowQuestion();
             }
         } else {
@@ -466,7 +547,14 @@ class DemoModerator {
                 this.elements.timerDisplay.classList.add('questions-phase');
             }
             
-            this.elements.currentPhase.textContent = phaseNames[this.currentPhase];
+            // Override phase name if in overtime
+            if (this.isOvertime && this.currentPhase === 'demo') {
+                this.elements.currentPhase.textContent = 'Demo Overtime';
+            } else if (this.isOvertime && this.currentPhase === 'qa') {
+                this.elements.currentPhase.textContent = 'Overtime - Questions Continue';
+            } else {
+                this.elements.currentPhase.textContent = phaseNames[this.currentPhase];
+            }
             this.elements.timeRemaining.textContent = this.formatTime(this.timeRemaining);
             
             // Handle progress calculation for negative time (overtime)
@@ -485,6 +573,15 @@ class DemoModerator {
         
         // Update Reset button state - disable when ready/fresh (00:00)
         this.elements.resetBtn.disabled = (this.currentPhase === 'ready');
+
+        // Update Next Phase button text based on current state
+        if (this.isOvertime && this.currentPhase === 'demo') {
+            this.elements.nextPhaseBtn.textContent = 'Start Q&A';
+        } else if (this.isOvertime && this.currentPhase === 'qa') {
+            this.elements.nextPhaseBtn.textContent = 'End Demo';
+        } else {
+            this.elements.nextPhaseBtn.textContent = 'Next Phase';
+        }
     }
 
     updateBackgroundColor(state) {
@@ -733,18 +830,25 @@ class DemoModerator {
 
     async speak(text, options = {}) {
         if (!this.ttsEnabled) return;
-        
+
         try {
+            // Check if this is a phrase that has pregenerated audio
+            const pregeneratedFile = await this.getPregeneratedAudioFile(text);
+            if (pregeneratedFile) {
+                await this.playPregeneratedAudio(pregeneratedFile, text);
+                return;
+            }
+
             // Pause transcription during TTS to avoid capturing our own speech
             const wasTranscribing = this.isTranscribing;
             if (wasTranscribing) {
                 this.pauseTranscription();
             }
-            
+
             this.isTTSSpeaking = true;
             await ipcRenderer.invoke('tts-speak', text, options);
             this.isTTSSpeaking = false;
-            
+
             // Resume transcription after TTS completes
             if (wasTranscribing) {
                 // Wait a brief moment for audio to clear, then resume
@@ -755,6 +859,104 @@ class DemoModerator {
         } catch (error) {
             console.error('TTS Error:', error);
             this.isTTSSpeaking = false;
+        }
+    }
+
+
+    async getPregeneratedAudioFile(text) {
+        // Normalize the text for comparison (lowercase, remove extra spaces)
+        const normalizedText = text.toLowerCase().replace(/\s+/g, ' ').trim();
+
+        // Check cache first
+        if (this.pregeneratedAudioCache.has(normalizedText)) {
+            return this.pregeneratedAudioCache.get(normalizedText);
+        }
+
+        // Generate dynamic time-based phrases
+        const demoMinutes = Math.floor(this.settings.demoTime / 60);
+        const qaMinutes = Math.floor(this.settings.qaTime / 60);
+
+        const dynamicPhrases = {
+            [`let's begin your demo! you have ${demoMinutes} minutes to showcase your project.`]: `start_demo_${demoMinutes}m.wav`,
+            [`demo time starts now! ${demoMinutes} minutes on the timer.`]: `start_demo_${demoMinutes}m.wav`,
+            [`starting question phase`]: 'start_questions.wav',
+            [`starting questions phase`]: 'start_questions.wav',
+            [`time for questions! you have ${qaMinutes} minutes for q and a.`]: `start_questions_${qaMinutes}m.wav`
+        };
+
+        // Static phrases that don't depend on time
+        const staticPhrases = {
+            'twenty seconds left!': 'twenty_seconds_warning.wav',
+            'twenty seconds remaining': 'twenty_seconds_warning.wav',
+            'demo time is up! great work!': 'demo_complete.wav',
+            'demo phase complete. time is up!': 'demo_complete.wav',
+            'questions time is up! thanks for an amazing demo!': 'questions_complete.wav',
+            'questions phase complete. time is up! thank you for an awesome demo!': 'questions_complete.wav',
+            'let me think of a great question for you...': 'thinking_question.wav',
+            'let me think about the first question for you...': 'thinking_question.wav'
+        };
+
+        // Check for dynamic phrases first
+        for (const [phrase, filename] of Object.entries(dynamicPhrases)) {
+            if (normalizedText === phrase.toLowerCase()) {
+                // Return the filename immediately (should be pre-generated)
+                this.pregeneratedAudioCache.set(normalizedText, filename);
+                return filename;
+                // Note: If file doesn't exist, playPregeneratedAudio will fall back to TTS
+            }
+        }
+
+        // Check static phrases
+        for (const [phrase, filename] of Object.entries(staticPhrases)) {
+            if (normalizedText === phrase) {
+                this.pregeneratedAudioCache.set(normalizedText, filename);
+                return filename;
+            }
+        }
+
+        return null;
+    }
+
+    async playPregeneratedAudio(filename, originalText = '') {
+        try {
+            // Pause transcription during audio playback to avoid capturing our own speech
+            const wasTranscribing = this.isTranscribing;
+            if (wasTranscribing) {
+                this.pauseTranscription();
+            }
+
+            this.isTTSSpeaking = true;
+            await ipcRenderer.invoke('play-pregenerated-audio', filename);
+            this.isTTSSpeaking = false;
+
+            // Resume transcription after audio completes
+            if (wasTranscribing) {
+                // Wait a brief moment for audio to clear, then resume
+                setTimeout(() => {
+                    this.resumeTranscription();
+                }, 500);
+            }
+        } catch (error) {
+            console.error('Error playing pregenerated audio:', error);
+            this.isTTSSpeaking = false;
+            // Fallback to regular TTS if pregenerated audio fails
+            if (originalText) {
+                // Recursively call speak but with cache disabled to avoid infinite loop
+                const wasTranscribing = this.isTranscribing;
+                if (wasTranscribing) {
+                    this.pauseTranscription();
+                }
+
+                this.isTTSSpeaking = true;
+                await ipcRenderer.invoke('tts-speak', originalText);
+                this.isTTSSpeaking = false;
+
+                if (wasTranscribing) {
+                    setTimeout(() => {
+                        this.resumeTranscription();
+                    }, 500);
+                }
+            }
         }
     }
 
@@ -872,8 +1074,12 @@ class DemoModerator {
         }
 
         try {
-            // Start timer
-            this.startTimer();
+            // Play announcement immediately using pre-generated audio
+            const demoMinutes = Math.floor(this.settings.demoTime / 60);
+            await this.speak(`Let's begin your demo! You have ${demoMinutes} minutes to showcase your project.`);
+
+            // Start timer (skip announcement since we just played it)
+            this.startTimer(true);
             
             // Start video recording
             await this.startRecording();
@@ -915,6 +1121,23 @@ class DemoModerator {
         }
     }
 
+    generateTranscriptText() {
+        if (this.allTranscriptMessages.length === 0) {
+            return 'No transcript available for this demo.';
+        }
+
+        const transcriptLines = ['Demo Transcript', '='.repeat(50), ''];
+
+        this.allTranscriptMessages.forEach(msg => {
+            const time = new Date(msg.timestamp).toLocaleString();
+            transcriptLines.push(`[${time}] (${msg.phase.toUpperCase()})`);
+            transcriptLines.push(msg.text);
+            transcriptLines.push('');
+        });
+
+        return transcriptLines.join('\n');
+    }
+
     async saveRecording() {
         if (this.recordedChunks.length === 0) return;
 
@@ -925,12 +1148,16 @@ class DemoModerator {
         try {
             const buffer = await blob.arrayBuffer();
             const uint8Array = new Uint8Array(buffer);
-            const savedPath = await ipcRenderer.invoke('save-recording', filename, uint8Array);
-            console.log('Recording saved to:', savedPath);
-            
+
+            // Generate transcript text
+            const transcriptData = this.generateTranscriptText();
+
+            const result = await ipcRenderer.invoke('save-recording', filename, uint8Array, transcriptData);
+            console.log('Recording and transcript saved to:', result.demoFolder);
+
             // Show success message
             const originalText = this.elements.recordingStatus.textContent;
-            this.elements.recordingStatus.textContent = 'Recording saved';
+            this.elements.recordingStatus.textContent = 'Recording & transcript saved';
             setTimeout(() => {
                 this.elements.recordingStatus.textContent = originalText;
             }, 3000);
@@ -1124,12 +1351,20 @@ class DemoModerator {
 
     addTranscriptMessage(text) {
         const timestamp = new Date().toLocaleTimeString();
+        const fullTimestamp = new Date().toISOString();
         const messageElement = document.createElement('div');
         messageElement.className = 'transcript-message';
         messageElement.innerHTML = `
             <div class="transcript-timestamp">${timestamp}</div>
             <div class="transcript-text">${text}</div>
         `;
+
+        // Store all transcript messages with full timestamps
+        this.allTranscriptMessages.push({
+            timestamp: fullTimestamp,
+            phase: this.currentPhase,
+            text: text
+        });
 
         // If we're in demo phase, save this message for question generation
         if (this.currentPhase === 'demo') {
@@ -1207,6 +1442,25 @@ class DemoModerator {
 
         // Clear demo transcript messages on reset
         this.demoTranscriptMessages = [];
+        this.allTranscriptMessages = [];
+
+        // Reset question generation state
+        this.earlyQuestionGenerated = false;
+        this.earlyQuestionResult = null;
+        this.questionGenerationStarted = false;
+        this.pregeneratedQuestionAudio = null;
+
+        // Reset warning state
+        this.twentySecondWarningGiven = false;
+
+        // Clear auto-transition
+        this.clearAutoTransition();
+
+        // Reset completion announcement flag
+        this.sessionCompleteAnnouncementMade = false;
+
+        // Clear pregenerated audio cache
+        this.pregeneratedAudioCache.clear();
 
         // Hide question display on reset
         this.dismissQuestion();
@@ -1254,17 +1508,87 @@ class DemoModerator {
         }
     }
 
+    async startEarlyQuestionGeneration() {
+        if (this.earlyQuestionGenerated) return;
+
+        console.log('Starting early question generation at 1 minute mark...');
+
+        try {
+            // Generate question in background without blocking
+            this.earlyQuestionResult = await this.generateQuestion();
+
+            // Also generate audio for the question if successful
+            if (this.earlyQuestionResult && this.earlyQuestionResult.success && this.earlyQuestionResult.question) {
+                console.log('Generating audio for question...');
+                try {
+                    const audioResult = await ipcRenderer.invoke('generate-question-audio', this.earlyQuestionResult.question);
+                    if (audioResult.success) {
+                        this.pregeneratedQuestionAudio = audioResult.filename;
+                        console.log('Question audio generated:', this.pregeneratedQuestionAudio);
+                    }
+                } catch (audioError) {
+                    console.warn('Failed to generate question audio, will use TTS fallback:', audioError);
+                    this.pregeneratedQuestionAudio = null;
+                }
+            }
+
+            this.earlyQuestionGenerated = true;
+            console.log('Early question generated successfully:', this.earlyQuestionResult);
+        } catch (error) {
+            console.error('Early question generation failed:', error);
+            this.earlyQuestionResult = null;
+            this.pregeneratedQuestionAudio = null;
+        }
+    }
+
     async generateAndShowQuestion() {
         try {
-            const result = await this.generateQuestion();
-            
-            if (result.success && result.question) {
+            let result;
+
+            // Use pre-generated question if available, otherwise generate new one
+            if (this.earlyQuestionGenerated && this.earlyQuestionResult) {
+                console.log('Using pre-generated question from early generation');
+                result = this.earlyQuestionResult;
+            } else {
+                console.log('No pre-generated question available, generating new one...');
+                result = await this.generateQuestion();
+
+                // Generate audio for the new question
+                if (result && result.success && result.question) {
+                    console.log('Generating audio for new question...');
+                    try {
+                        const audioResult = await ipcRenderer.invoke('generate-question-audio', result.question);
+                        if (audioResult.success) {
+                            this.pregeneratedQuestionAudio = audioResult.filename;
+                            console.log('New question audio generated:', this.pregeneratedQuestionAudio);
+                        }
+                    } catch (audioError) {
+                        console.warn('Failed to generate new question audio, will use TTS fallback:', audioError);
+                        this.pregeneratedQuestionAudio = null;
+                    }
+                }
+            }
+
+            if (result && result.success && result.question) {
                 // Display the question
                 this.showQuestion(result.question, result.fallback);
-                
-                // Voice the question
+
+                // Voice the question using pregenerated audio if available
                 await new Promise(resolve => setTimeout(resolve, 1000)); // Brief pause
-                await this.speak(result.question);
+
+                if (this.pregeneratedQuestionAudio) {
+                    console.log('Using question audio:', this.pregeneratedQuestionAudio);
+                    try {
+                        await this.playPregeneratedAudio(this.pregeneratedQuestionAudio, result.question, true);
+                        // Clean up the audio file after use
+                        this.cleanupQuestionAudio();
+                    } catch (error) {
+                        console.warn('Failed to play question audio, falling back to TTS:', error);
+                        await this.speak(result.question, { isQAQuestion: true });
+                    }
+                } else {
+                    await this.speak(result.question, { isQAQuestion: true });
+                }
             } else {
                 console.error('Question generation failed:', result);
             }
@@ -1383,12 +1707,100 @@ class DemoModerator {
         try {
             await ipcRenderer.invoke('save-settings', this.settings);
             console.log('Settings auto-saved');
-            
+
             // Update settings form if it's open
             this.updateSettingsInputs();
+
+            // Pre-generate dynamic audio files for new time settings
+            await this.pregenerateDynamicAudioFiles();
         } catch (error) {
             console.error('Auto-save failed:', error);
         }
+    }
+
+    async initializeAudioFiles() {
+        // Wait a moment for TTS to fully initialize
+        setTimeout(async () => {
+            await this.pregenerateDynamicAudioFiles();
+        }, 1000);
+    }
+
+    async pregenerateDynamicAudioFiles() {
+        try {
+            const demoMinutes = Math.floor(this.settings.demoTime / 60);
+            const qaMinutes = Math.floor(this.settings.qaTime / 60);
+
+            const dynamicPhrases = [
+                { text: `Let's begin your demo! You have ${demoMinutes} minutes to showcase your project.`, filename: `start_demo_${demoMinutes}m.wav` },
+                { text: `Demo time starts now! ${demoMinutes} minutes on the timer.`, filename: `start_demo_${demoMinutes}m.wav` },
+                { text: `Time for questions! You have ${qaMinutes} minutes for Q and A.`, filename: `start_questions_${qaMinutes}m.wav` }
+            ];
+
+            console.log('Pre-generating audio files for immediate playback...');
+
+            // Pre-generate all dynamic audio files
+            for (const { text, filename } of dynamicPhrases) {
+                try {
+                    // Cache the filename immediately for instant lookup
+                    const normalizedText = text.toLowerCase().replace(/\s+/g, ' ').trim();
+                    this.pregeneratedAudioCache.set(normalizedText, filename);
+
+                    // Generate the actual audio file
+                    const result = await ipcRenderer.invoke('generate-dynamic-audio', text, filename);
+                    if (result.success) {
+                        console.log(`✓ Pre-generated audio: ${filename}`);
+                    }
+                } catch (error) {
+                    console.warn(`Failed to pre-generate ${filename}:`, error);
+                    // Keep the cache entry so it tries to play and falls back to TTS gracefully
+                }
+            }
+
+            console.log('Audio pre-generation complete. Start Demo should now play immediately.');
+        } catch (error) {
+            console.error('Error pre-generating dynamic audio files:', error);
+        }
+    }
+
+    cleanupQuestionAudio() {
+        // Reset the pregenerated audio filename after use
+        // The actual file cleanup will be handled by the main process if needed
+        this.pregeneratedQuestionAudio = null;
+    }
+
+    async give20SecondWarning() {
+        console.log('Giving 20-second warning');
+        try {
+            await this.speak('Twenty seconds left!');
+        } catch (error) {
+            console.error('Error giving 20-second warning:', error);
+        }
+    }
+
+    setupAutoTransition() {
+        // Clear any existing timeout
+        if (this.autoTransitionTimeout) {
+            clearTimeout(this.autoTransitionTimeout);
+        }
+
+        console.log('Setting up auto-transition to Q&A in 10 seconds');
+
+        // Set up 10-second auto-transition to Q&A
+        this.autoTransitionTimeout = setTimeout(async () => {
+            if (this.currentPhase === 'demo' && this.isOvertime && !this.autoTransitionTriggered) {
+                this.autoTransitionTriggered = true;
+                console.log('Auto-transitioning to Q&A phase');
+                await this.nextPhase();
+            }
+        }, 10000); // 10 seconds
+    }
+
+    clearAutoTransition() {
+        if (this.autoTransitionTimeout) {
+            clearTimeout(this.autoTransitionTimeout);
+            this.autoTransitionTimeout = null;
+        }
+        this.autoTransitionTriggered = false;
     }
 }
 

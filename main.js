@@ -66,11 +66,28 @@ ipcMain.handle('get-recordings-path', async () => {
   return recordingsDir;
 });
 
-ipcMain.handle('save-recording', async (event, filename, buffer) => {
+ipcMain.handle('save-recording', async (event, filename, buffer, transcriptData) => {
   try {
-    const filePath = path.join(recordingsDir, filename);
-    fs.writeFileSync(filePath, buffer);
-    return filePath;
+    // Create demo-specific subfolder
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const demoFolder = path.join(recordingsDir, `demo-${timestamp}`);
+
+    if (!fs.existsSync(demoFolder)) {
+      fs.mkdirSync(demoFolder, { recursive: true });
+    }
+
+    // Save video file
+    const videoPath = path.join(demoFolder, filename);
+    fs.writeFileSync(videoPath, buffer);
+
+    // Save transcript file if provided
+    if (transcriptData) {
+      const transcriptFilename = filename.replace(/\.[^.]+$/, '.txt');
+      const transcriptPath = path.join(demoFolder, transcriptFilename);
+      fs.writeFileSync(transcriptPath, transcriptData, 'utf8');
+    }
+
+    return { videoPath, demoFolder };
   } catch (error) {
     console.error('Error saving recording:', error);
     throw error;
@@ -141,6 +158,129 @@ ipcMain.handle('tts-set-config', async (event, config) => {
 
 ipcMain.handle('tts-get-config', async () => {
   return { enabled: ttsEnabled, voice: ttsVoice, useKokoro: ttsUseKokoro };
+});
+
+// Play pregenerated audio files
+ipcMain.handle('play-pregenerated-audio', async (event, filename) => {
+  const audioPath = path.join(__dirname, 'pregenerated_audio', filename);
+
+  if (!fs.existsSync(audioPath)) {
+    throw new Error(`Pregenerated audio file not found: ${filename}`);
+  }
+
+  try {
+    await playAudioFile(audioPath);
+    return { success: true };
+  } catch (error) {
+    console.error('Error playing pregenerated audio:', error);
+    throw error;
+  }
+});
+
+// Generate dynamic audio for time-based phrases
+ipcMain.handle('generate-dynamic-audio', async (event, text, filename) => {
+  try {
+    const audioDir = path.join(__dirname, 'pregenerated_audio');
+    if (!fs.existsSync(audioDir)) {
+      fs.mkdirSync(audioDir, { recursive: true });
+    }
+
+    const outputPath = path.join(audioDir, filename);
+
+    // Use TTS to generate the audio file
+    if (ttsUseKokoro) {
+      const pythonPath = path.join(__dirname, 'kokoro_env', 'bin', 'python');
+      const scriptPath = path.join(__dirname, 'kokoro_tts.py');
+
+      return new Promise((resolve, reject) => {
+        const args = [
+          scriptPath,
+          '--text', text,
+          '--voice', ttsVoice,
+          '--output', outputPath,
+          '--no-play'
+        ];
+
+        const ttsProcess = spawn(pythonPath, args);
+
+        let error = '';
+
+        ttsProcess.stderr.on('data', (data) => {
+          error += data.toString();
+        });
+
+        ttsProcess.on('close', (code) => {
+          if (code === 0 && fs.existsSync(outputPath)) {
+            resolve({ success: true, filename: filename });
+          } else {
+            reject(new Error(`Dynamic audio generation failed with code ${code}: ${error}`));
+          }
+        });
+
+        ttsProcess.on('error', (err) => {
+          reject(new Error(`Failed to start dynamic audio generation: ${err.message}`));
+        });
+      });
+    } else {
+      // For system TTS, we'll skip file generation and use live TTS
+      return { success: false, reason: 'System TTS does not support file generation' };
+    }
+  } catch (error) {
+    console.error('Error in generate-dynamic-audio:', error);
+    throw error;
+  }
+});
+
+// Generate audio for questions
+ipcMain.handle('generate-question-audio', async (event, text) => {
+  try {
+    const pythonPath = path.join(__dirname, 'kokoro_env', 'bin', 'python');
+    const scriptPath = path.join(__dirname, 'kokoro_tts.py');
+
+    // Create pregenerated_audio directory if it doesn't exist
+    const audioDir = path.join(__dirname, 'pregenerated_audio');
+    if (!fs.existsSync(audioDir)) {
+      fs.mkdirSync(audioDir, { recursive: true });
+    }
+
+    // Generate unique filename for this question
+    const timestamp = Date.now();
+    const filename = `question_${timestamp}.wav`;
+    const outputPath = path.join(audioDir, filename);
+
+    return new Promise((resolve, reject) => {
+      const args = [
+        scriptPath,
+        '--text', text,
+        '--voice', ttsVoice,
+        '--output', outputPath,
+        '--no-play'
+      ];
+
+      const ttsProcess = spawn(pythonPath, args);
+
+      let error = '';
+
+      ttsProcess.stderr.on('data', (data) => {
+        error += data.toString();
+      });
+
+      ttsProcess.on('close', (code) => {
+        if (code === 0 && fs.existsSync(outputPath)) {
+          resolve({ success: true, filename: filename });
+        } else {
+          reject(new Error(`Question audio generation failed with code ${code}: ${error}`));
+        }
+      });
+
+      ttsProcess.on('error', (err) => {
+        reject(new Error(`Failed to start question audio generation: ${err.message}`));
+      });
+    });
+  } catch (error) {
+    console.error('Error in generate-question-audio:', error);
+    throw error;
+  }
 });
 
 // Get available Kokoro voices
