@@ -55,6 +55,9 @@ class DemoModerator {
         // Phase transition guard to prevent concurrent transitions
         this.isTransitioning = false;
 
+        // Phase completion guard to prevent multiple completions
+        this.phaseCompletionTriggered = false;
+
         // Completion announcement tracking
         this.sessionCompleteAnnouncementMade = false;
 
@@ -244,6 +247,9 @@ class DemoModerator {
             // Reset warning state for new demo
             this.twentySecondWarningGiven = false;
 
+            // Reset phase completion flag for new demo
+            this.phaseCompletionTriggered = false;
+
             // Clear auto-transition for new demo
             this.clearAutoTransition();
 
@@ -299,6 +305,9 @@ class DemoModerator {
 
             // Reset warning state for new demo
             this.twentySecondWarningGiven = false;
+
+            // Reset phase completion flag for new demo
+            this.phaseCompletionTriggered = false;
 
             // Clear auto-transition for new demo
             this.clearAutoTransition();
@@ -417,6 +426,7 @@ class DemoModerator {
             this.lastPauseTime = null;
             this.isOvertime = false;
             this.twentySecondWarningGiven = false; // Reset warning for new phase
+            this.phaseCompletionTriggered = false; // Reset completion flag for new phase
             this.elements.pauseBtn.disabled = false;
             this.elements.nextPhaseBtn.disabled = false;
 
@@ -510,7 +520,10 @@ class DemoModerator {
         }
 
         // Trigger phase completion when time reaches 0
-        if (this.timeRemaining <= 0 && !this.isOvertime) {
+        if (this.timeRemaining <= 0 && !this.isOvertime && !this.phaseCompletionTriggered) {
+            this.phaseCompletionTriggered = true;
+            console.log('🏁 Phase completion triggered for', this.currentPhase);
+
             if (this.currentPhase === 'demo') {
                 // Demo phase: immediately transition to Q&A
                 this.phaseComplete().catch(console.error);
