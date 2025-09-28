@@ -609,6 +609,9 @@ class DemoModerator {
             this.elements.progressFill.style.width = '0%';
             this.updateBackgroundColor('ready');
         } else if (this.currentPhase === 'completed') {
+            this.elements.currentPhase.textContent = 'READY';
+            this.elements.timeRemaining.textContent = '00:00';
+            this.elements.progressFill.style.width = '100%';
             this.elements.timerDisplay.classList.add('completed');
             this.updateBackgroundColor('completed');
             // Don't return here, let the button state logic run below
