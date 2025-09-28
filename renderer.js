@@ -383,8 +383,11 @@ class DemoModerator {
     }
 
     async nextPhase(skipAnnouncement = false, skipQuestionGeneration = false) {
+        console.log('🔄 nextPhase called, currentPhase:', this.currentPhase, 'phaseIndex:', this.phaseIndex);
+
         // If we're in Questions Phase (last phase), complete the session
         if (this.currentPhase === 'qa') {
+            console.log('⏹️ QA phase complete, ending session');
             await this.speak('Questions time is up! Thanks for an amazing demo!');
             this.completeSession();
             return;
@@ -394,11 +397,12 @@ class DemoModerator {
         
         if (this.phaseIndex < this.phases.length - 1) {
             const previousPhase = this.currentPhase;
-            
+
             this.phaseIndex++;
             this.currentPhase = this.phases[this.phaseIndex];
             this.timeRemaining = this.settings[this.currentPhase + 'Time'];
             this.totalTime = this.timeRemaining;
+            console.log('🎯 Phase transition:', previousPhase, '->', this.currentPhase, 'timeRemaining:', this.timeRemaining);
             this.updateDisplay();
             
             // Restart the timer for the new phase
@@ -1177,10 +1181,6 @@ class DemoModerator {
             this.earlyQuestionResult = null;
             this.questionGenerationStarted = false;
             this.pregeneratedQuestionAudio = null;
-
-            // Clear any pending timers to prevent race conditions
-            clearInterval(this.timer);
-            this.timer = null;
 
             // Complete timer session
             this.completeSession();
