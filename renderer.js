@@ -920,8 +920,6 @@ class DemoModerator {
         const dynamicPhrases = {
             [`let's begin your demo! you have ${demoMinutes} minutes to showcase your project.`]: `start_demo_${demoMinutes}m.wav`,
             [`demo time starts now! ${demoMinutes} minutes on the timer.`]: `start_demo_${demoMinutes}m.wav`,
-            [`starting question phase`]: 'start_questions.wav',
-            [`starting questions phase`]: 'start_questions.wav',
             [`time for questions! you have ${qaMinutes} minutes for q and a.`]: `start_questions_${qaMinutes}m.wav`
         };
 
@@ -1117,6 +1115,7 @@ class DemoModerator {
         }
 
         try {
+            console.log('🚀 Starting master recording...');
             // Set up the timer display and UI immediately (but don't start countdown yet)
             this.prepareTimerForStart();
 
@@ -1127,15 +1126,20 @@ class DemoModerator {
 
             // Play announcement immediately using pre-generated audio
             const demoMinutes = Math.floor(this.settings.demoTime / 60);
+            console.log('🎤 About to speak start announcement...');
             await this.speak(`Let's begin your demo! You have ${demoMinutes} minutes to showcase your project.`);
+            console.log('✅ Start announcement complete');
 
             // Now start the actual timer countdown
+            console.log('⏰ Starting timer countdown...');
             this.startTimerCountdown();
 
             // Start video recording
+            console.log('📹 Starting video recording...');
             await this.startRecording();
 
             // Start transcription
+            console.log('🎙️ Starting transcription...');
             await this.startTranscription();
 
             // Update UI to final recording state
