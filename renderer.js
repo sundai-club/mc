@@ -589,7 +589,7 @@ class DemoModerator {
     async completeSession() {
         clearInterval(this.timer);
         this.currentPhase = 'completed';
-        this.elements.currentPhase.textContent = 'Ready to Start';
+        this.elements.currentPhase.textContent = 'READY';
         this.elements.timeRemaining.textContent = '00:00';
         this.elements.progressFill.style.width = '100%';
         
@@ -605,7 +605,7 @@ class DemoModerator {
         this.elements.timerDisplay.classList.remove('demo-phase', 'questions-phase', 'completed');
         
         if (this.currentPhase === 'ready') {
-            this.elements.currentPhase.textContent = 'Ready to Start';
+            this.elements.currentPhase.textContent = 'READY';
             this.elements.timeRemaining.textContent = '00:00';
             this.elements.progressFill.style.width = '0%';
             this.updateBackgroundColor('ready');
@@ -1298,7 +1298,7 @@ class DemoModerator {
         
         clearInterval(this.timer);
         this.currentPhase = 'completed';
-        this.elements.currentPhase.textContent = 'Ready to Start';
+        this.elements.currentPhase.textContent = 'READY';
         this.elements.timeRemaining.textContent = '00:00';
         this.elements.progressFill.style.width = '100%';
         
