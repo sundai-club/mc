@@ -1223,6 +1223,10 @@ class DemoModerator {
             this.questionGenerationStarted = false;
             this.pregeneratedQuestionAudio = null;
 
+            // Reset warning flags for next demo
+            this.twentySecondWarningGiven = false;
+            this.phaseCompletionTriggered = false;
+
             // Complete timer session
             this.completeSession();
 
@@ -1301,6 +1305,10 @@ class DemoModerator {
         clearInterval(this.timer);
         this.currentPhase = 'completed';
         this.updateDisplay(); // Properly update display and remove phase classes
+
+        // Reset warning flags for next demo
+        this.twentySecondWarningGiven = false;
+        this.phaseCompletionTriggered = false;
 
         // Clear UI for clean state
         this.clearTranscript();
