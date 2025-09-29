@@ -87,6 +87,31 @@ class DemoModerator {
     }
 
     initializeElements() {
+        // Demo completion phrase variants
+        this.demoCompletionPhrases = [
+            "Demo time is up! Great work!",
+            "Fantastic demo! Your time is complete!",
+            "Demo complete! That was impressive!",
+            "Time's up! Excellent presentation!",
+            "Demo finished! Outstanding work!"
+        ];
+
+        this.questionsCompletionPhrases = [
+            "Questions time is up! Thanks for an amazing demo!",
+            "Q&A complete! That was an incredible demo!",
+            "Questions finished! Thank you for such an inspiring demo!",
+            "Time's up! Thanks for that fantastic demonstration!",
+            "Q&A session complete! What an outstanding demo!"
+        ];
+
+        this.sessionCompletionPhrases = [
+            "Demo complete! Time is up!",
+            "Session finished! Great work!",
+            "Demo session complete! Well done!",
+            "Time's up! Excellent demo!",
+            "Demo complete! Outstanding presentation!"
+        ];
+
         this.elements = {
             timerDisplay: document.getElementById('timerDisplay'),
             currentPhase: document.getElementById('currentPhase'),
@@ -407,7 +432,7 @@ class DemoModerator {
             // If we're in Questions Phase (last phase), complete the session
             if (this.currentPhase === 'qa') {
                 console.log('⏹️ QA phase complete, ending session');
-                await this.speak('Questions time is up! Thanks for an amazing demo!');
+                await this.speak(this.getRandomCompletionPhrase('questions'));
                 this.completeSession();
                 return;
             }
@@ -550,14 +575,14 @@ class DemoModerator {
 
         if (this.currentPhase === 'demo') {
             // For Demo Phase: immediately transition to Q&A
-            await this.speak(`Demo time is up! Great work!`);
+            await this.speak(this.getRandomCompletionPhrase('demo'));
 
             // Transition immediately to Q&A phase
             await this.nextPhase(false, false); // Don't skip announcement, allow question generation
             return; // Exit early since we've transitioned
         } else if (this.currentPhase === 'qa') {
             // For Questions Phase: continue recording in overtime instead of ending session
-            await this.speak(`Questions time is up! Thanks for an amazing demo!`);
+            await this.speak(this.getRandomCompletionPhrase('questions'));
 
             // Continue timer in overtime mode - don't clear interval
             this.elements.currentPhase.textContent = 'Overtime - Questions Continue';
@@ -594,7 +619,7 @@ class DemoModerator {
         this.updateDisplay(); // Properly update display and remove phase classes
 
         // Announce demo completion and time is up
-        await this.speak('Demo complete! Time is up!');
+        await this.speak(this.getRandomCompletionPhrase('session'));
 
         this.elements.pauseBtn.disabled = true;
         this.elements.nextPhaseBtn.disabled = true;
@@ -1695,6 +1720,25 @@ class DemoModerator {
 
     dismissQuestion() {
         this.elements.questionDisplay.style.display = 'none';
+    }
+
+    getRandomCompletionPhrase(type) {
+        let phrases;
+        switch (type) {
+            case 'demo':
+                phrases = this.demoCompletionPhrases;
+                break;
+            case 'questions':
+                phrases = this.questionsCompletionPhrases;
+                break;
+            case 'session':
+                phrases = this.sessionCompletionPhrases;
+                break;
+            default:
+                phrases = this.sessionCompletionPhrases;
+        }
+        const randomIndex = Math.floor(Math.random() * phrases.length);
+        return phrases[randomIndex];
     }
 
     startTimeEdit(phase) {
