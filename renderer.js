@@ -30,6 +30,7 @@ class DemoModerator {
         this.transcriptionRecorder = null;
         this.isTranscribing = false;
         this.transcriptionPaused = false;
+        this.isReadingQuestion = false;
         this.transcriptionChunks = [];
         this.whisperReady = false;
         this.availableMicrophones = [];
@@ -1666,12 +1667,20 @@ class DemoModerator {
     }
 
     async readQuestion() {
+        // Prevent multiple simultaneous calls
+        if (this.isReadingQuestion) {
+            return;
+        }
+
         const questionText = this.elements.generatedQuestion.textContent;
         if (questionText && questionText.trim()) {
             try {
+                this.isReadingQuestion = true;
                 await this.speak(questionText);
             } catch (error) {
                 console.error('Error reading question:', error);
+            } finally {
+                this.isReadingQuestion = false;
             }
         }
     }
