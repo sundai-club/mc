@@ -1,6 +1,18 @@
 kokoro_env
+qwen_tts_env
+__pycache__/
+*.pyc
 models
 recordings
+voice_samples/**
+!voice_samples/frido/
+voice_samples/frido/**
+!voice_samples/frido/frido_reference.wav
+!voice_samples/frido/frido_reference.txt
+!voice_samples/gabriella/
+voice_samples/gabriella/**
+!voice_samples/gabriella/gabriella_reference.wav
+!voice_samples/gabriella/gabriella_reference.txt
 temp
 .idea
 

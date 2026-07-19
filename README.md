@@ -9,6 +9,7 @@ A desktop application built with Electron for moderating demo presentations with
 - **Timer Controls**: Start, pause, resume, reset, and skip to next phase
 - **Video Recording**: Record demos with webcam and microphone
 - **Local Speech-to-Text**: Real-time transcription using local Whisper model (offline, private)
+- **Local Qwen Voices**: Consented Frido and Gabriella clones plus the built-in Serena, Vivian, and Aiden voices run locally on Apple Silicon
 - **Live Transcript Panel**: See your speech as text in real-time on the right side
 - **Automatic Saving**: All recordings saved to `recordings/` folder with timestamps
 - **Live Preview**: See your webcam feed during recording
@@ -23,6 +24,7 @@ A desktop application built with Electron for moderating demo presentations with
 - **FFmpeg** (for audio format conversion): Install with `brew install ffmpeg` on macOS
 - **Ollama** (for local question generation): Install from [ollama.com](https://ollama.com)
 - **Python 3** (for local Kokoro text-to-speech)
+- **Apple Silicon Mac** (for the optional Qwen3-TTS voice clones)
 
 ## Installation
 
@@ -55,12 +57,24 @@ The first setup downloads Whisper `base.en`, Kokoro v1.0, and `qwen3.5:4b-mlx` t
    npm run pull-question-model
    ```
 
-4. **Install Whisper CLI** (if not already installed):
+4. **Set up the local Qwen voices** (Apple Silicon only):
+   ```bash
+   npm run setup-cloned-voice
+   ```
+   The repository includes only the two small, consented reference WAV/transcript pairs required for the Frido and Gabriella voices. Original/full recordings, extracted segments, manifests, generated audio, and downloaded models stay local and are ignored by Git. The setup downloads the local 4-bit Qwen3-TTS Base model for clones and CustomVoice model for preset voices, using roughly 3.2 GB combined. Kokoro remains available internally as a fallback.
+
+   If you have the private source recordings locally and need to rebuild either reference pair, run these before setup:
+   ```bash
+   node scripts/build-consented-voice-samples.js
+   node scripts/build-consented-voice-samples.js gabriella
+   ```
+
+5. **Install Whisper CLI** (if not already installed):
    - **macOS**: `brew install whisper-cpp`
    - **Linux**: Follow [whisper.cpp installation guide](https://github.com/ggerganov/whisper.cpp)
    - **Windows**: Download from [whisper.cpp releases](https://github.com/ggerganov/whisper.cpp/releases)
 
-5. **Install FFmpeg** (required for audio conversion):
+6. **Install FFmpeg** (required for audio conversion):
    - **macOS**: `brew install ffmpeg`
    - **Linux**: `sudo apt install ffmpeg` or equivalent for your distribution
    - **Windows**: Download from [ffmpeg.org](https://ffmpeg.org/download.html)
@@ -106,6 +120,10 @@ The application will:
 3. **Check Transcription**: View Whisper model status (✅ ready or ❌ needs setup)
 4. **Save Settings**: Click "Save Settings" to apply changes
 
+The voice menu shows `Frido`, `Gabriella`, `Serena · Qwen`, `Vivian · Qwen`, and `Aiden · Qwen`. Frido remains the default when his local reference is installed. Serena is warm and gentle, Vivian is bright and youthful, and Aiden is Qwen's clear native-English American male preset. Transition phrases are cached separately per voice, so changing the selection cannot replay audio generated with another voice.
+
+The local moderator prompt and fixed announcements follow a restrained version of Frido's speaking style derived from the consented samples: conversational openings, concrete observations, calibrated claims, and questions that narrow many possible angles to the one point with the biggest leverage. The style rules intentionally avoid accent imitation and excessive filler.
+
 ## File Structure
 
 ```
@@ -119,6 +137,11 @@ mc/
 ├── package.json      # Project configuration with Whisper dependencies
 ├── download-model.js # Script to download Whisper model
 ├── setup-tts.js      # Kokoro runtime/model setup and verification
+├── setup-cloned-voice.js # Local MLX/Qwen voice-clone setup
+├── qwen_voice_server.py  # Persistent consented-clone worker
+├── moderator-style.js    # Shared local prompt, fallback questions, and announcement copy
+├── audio-playback-queue.js # Prevents announcements from overlapping across sessions
+├── scripts/build-consented-voice-samples.js # Rebuilds isolated local samples
 ├── recordings/       # Auto-created folder for video files
 ├── models/          # Auto-created folder for verified Whisper/Kokoro weights
 ├── temp/            # Auto-created folder for temporary audio processing

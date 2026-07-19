@@ -4,8 +4,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   demoTime: 2 * 60,
   qaTime: 2 * 60,
   ttsEnabled: true,
-  ttsVoice: 'af_sarah',
-  ttsUseKokoro: true
+  ttsVoice: 'cl_frido',
+  ttsUseKokoro: true,
+  cameraId: null,
+  microphoneId: null
 });
 
 const QUESTION_MODEL = process.env.OLLAMA_QUESTION_MODEL || 'qwen3.5:4b-mlx';
@@ -28,6 +30,23 @@ function validateVoice(voice) {
     throw new Error('Invalid TTS voice');
   }
   return voice;
+}
+
+function validateMediaDevicePreferences(preferences) {
+  const validateDeviceId = (deviceId, label) => {
+    if (deviceId == null || deviceId === '') {
+      return null;
+    }
+    if (typeof deviceId !== 'string' || deviceId.length > 2048 || /[\u0000-\u001f]/.test(deviceId)) {
+      throw new Error(`Invalid ${label} device ID`);
+    }
+    return deviceId;
+  };
+
+  return {
+    cameraId: validateDeviceId(preferences?.cameraId, 'camera'),
+    microphoneId: validateDeviceId(preferences?.microphoneId, 'microphone')
+  };
 }
 
 function validateGeneratedQuestion(question) {
@@ -68,6 +87,7 @@ module.exports = {
   WHISPER_MODEL_SHA256,
   safeFilename,
   validateGeneratedQuestion,
+  validateMediaDevicePreferences,
   validateTimerSettings,
   validateTranscript,
   validateVoice

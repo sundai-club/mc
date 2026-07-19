@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 const allowedChannels = new Set([
   'save-settings',
   'load-settings',
+  'save-media-device-preferences',
+  'load-media-device-preferences',
   'get-recordings-path',
   'toggle-fullscreen',
   'save-recording',
@@ -10,7 +12,7 @@ const allowedChannels = new Set([
   'tts-speak',
   'tts-set-config',
   'tts-get-config',
-  'tts-get-kokoro-voices',
+  'tts-get-voices',
   'play-pregenerated-audio',
   'generate-dynamic-audio',
   'generate-question-audio',

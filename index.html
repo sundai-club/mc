@@ -58,7 +58,7 @@
                     </div>
 
                     <div class="controls" aria-label="Session controls">
-                        <button id="masterRecordBtn" class="btn-record" type="button">
+                        <button id="masterRecordBtn" class="btn-record" type="button" aria-label="Start demo">
                             <span id="recordIcon" class="btn-icon" aria-hidden="true">▶</span>
                             <span id="recordText">Start Demo</span>
                         </button>
@@ -66,7 +66,7 @@
                             <span class="btn-icon" aria-hidden="true">Ⅱ</span>
                             <span id="pauseText">Pause</span>
                         </button>
-                        <button id="nextPhaseBtn" class="btn-secondary" type="button" disabled>
+                        <button id="nextPhaseBtn" class="btn-primary" type="button" disabled>
                             <span class="btn-icon" aria-hidden="true">→</span>
                             <span id="nextPhaseText">Next Phase</span>
                         </button>
@@ -227,9 +227,9 @@
                                 </label>
                             </div>
                             <div class="form-group compact-group">
-                                <label for="ttsVoice">Kokoro voice</label>
+                                <label for="ttsVoice">Moderator voice</label>
                                 <select id="ttsVoice">
-                                    <option value="af_sarah">Loading Kokoro voices...</option>
+                                    <option value="cl_frido">Loading local voices...</option>
                                 </select>
                                 <small class="form-help">Selecting a voice plays a short local preview.</small>
                             </div>
@@ -245,6 +245,8 @@
         </main>
     </div>
 
+    <script src="audio-playback-queue.js"></script>
+    <script src="moderator-style.js"></script>
     <script src="renderer.js"></script>
 </body>
 </html>

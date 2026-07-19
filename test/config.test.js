@@ -2,11 +2,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  DEFAULT_SETTINGS,
   QUESTION_MAX_TOKENS,
   QUESTION_MODEL,
   QUESTION_TIMEOUT_MS,
   safeFilename,
   validateGeneratedQuestion,
+  validateMediaDevicePreferences,
   validateTimerSettings,
   validateTranscript,
   validateVoice
@@ -28,10 +30,36 @@ test('accepts valid timer settings and rejects invalid values', () => {
   assert.throws(() => validateTimerSettings({ demoTime: 120, qaTime: 3660 }));
 });
 
-test('accepts Kokoro voices and rejects command-like values', () => {
+test('accepts configured voice IDs and rejects command-like values', () => {
   assert.equal(validateVoice('af_sarah'), 'af_sarah');
+  assert.equal(validateVoice('cl_frido'), 'cl_frido');
+  assert.equal(validateVoice('cl_gabriella'), 'cl_gabriella');
+  assert.equal(validateVoice('qv_serena'), 'qv_serena');
+  assert.equal(validateVoice('qv_vivian'), 'qv_vivian');
+  assert.equal(validateVoice('qv_aiden'), 'qv_aiden');
+  assert.equal(DEFAULT_SETTINGS.ttsVoice, 'cl_frido');
   assert.throws(() => validateVoice('Samantha'));
   assert.throws(() => validateVoice('../af_sarah'));
+});
+
+test('normalizes and validates saved media-device preferences', () => {
+  assert.deepEqual(validateMediaDevicePreferences({
+    cameraId: 'camera-device-id',
+    microphoneId: 'microphone-device-id'
+  }), {
+    cameraId: 'camera-device-id',
+    microphoneId: 'microphone-device-id'
+  });
+  assert.deepEqual(validateMediaDevicePreferences({ cameraId: '', microphoneId: null }), {
+    cameraId: null,
+    microphoneId: null
+  });
+  assert.deepEqual(validateMediaDevicePreferences(undefined), {
+    cameraId: null,
+    microphoneId: null
+  });
+  assert.throws(() => validateMediaDevicePreferences({ cameraId: 'bad\ndevice' }));
+  assert.throws(() => validateMediaDevicePreferences({ microphoneId: 42 }));
 });
 
 test('accepts only one plain-text question of at most 20 words', () => {

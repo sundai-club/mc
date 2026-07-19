@@ -9,6 +9,34 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 APP_DIR="${0:A:h}"
+
+close_launcher_terminal() {
+    # Terminal may be configured to keep cleanly exited shells open. Close only
+    # the tab that ran this launcher, even if another Terminal window is active.
+    local launcher_tty
+    launcher_tty="$(tty 2>/dev/null)"
+    [[ "$TERM_PROGRAM" == "Apple_Terminal" && "$launcher_tty" == /dev/* ]] || return 0
+
+    (
+        sleep 0.3
+        /usr/bin/osascript - "$launcher_tty" <<'APPLESCRIPT'
+on run argv
+    set launcherTTY to item 1 of argv
+    tell application "Terminal"
+        repeat with terminalWindow in windows
+            repeat with terminalTab in tabs of terminalWindow
+                if tty of terminalTab is launcherTTY then
+                    close terminalTab
+                    return
+                end if
+            end repeat
+        end repeat
+    end tell
+end run
+APPLESCRIPT
+    ) </dev/null >/dev/null 2>&1 &!
+}
+
 cd -- "$APP_DIR" || {
     echo "Could not open the Demo Moderator folder."
     read -k 1 "?Press any key to close..."
@@ -36,6 +64,8 @@ if (( status != 0 )); then
     echo
     echo "Demo Moderator exited with an error (code $status)."
     read -k 1 "?Press any key to close..."
+else
+    close_launcher_terminal
 fi
 
 exit $status

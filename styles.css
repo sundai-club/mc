@@ -1673,9 +1673,15 @@ body.timer-red-blinking .time-display {
 }
 
 .btn-stop {
-    border-color: #ff9eaa;
-    background: #c83c53;
-    box-shadow: 4px 4px 0 #741c30;
+    min-width: 132px;
+    border-color: #834557;
+    color: #eaa6b0;
+    background: #21151d;
+    box-shadow: 3px 3px 0 #4a1927;
+}
+
+#nextPhaseBtn {
+    min-width: 158px;
 }
 
 .btn-secondary {
@@ -2008,12 +2014,57 @@ button:disabled {
     }
 }
 
+@media (max-width: 620px) {
+    #masterRecordBtn.btn-stop {
+        flex-basis: auto;
+    }
+
+    #nextPhaseBtn {
+        flex-basis: 100%;
+    }
+}
+
 /* Final camera/voice state overrides must follow the shared pixel surfaces. */
 .recording-section,
 .recording-section:has(.question-display[style*="block"]) {
     border: 0;
     background: none;
     box-shadow: none;
+}
+
+/* Keep the presenter feed anchored and identically sized in every session state. */
+.recording-section:has(.question-display[style*="block"]) .video-preview {
+    height: auto;
+    align-self: flex-end;
+}
+
+.video-preview .card-header > :first-child {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.video-preview .card-header h2 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.video-preview .recording-status {
+    min-width: 0;
+    max-width: 132px;
+}
+
+.video-preview .recording-status span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@media (max-width: 620px) {
+    .recording-section:has(.question-display[style*="block"]) .video-preview {
+        align-self: flex-start;
+    }
 }
 
 .transcript-placeholder .waveform:not(.is-listening) span {
