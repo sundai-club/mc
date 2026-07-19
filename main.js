@@ -7,6 +7,7 @@ const http = require('http');
 const { AudioPlaybackQueue } = require('./audio-playback-queue');
 const { localAudioCacheDir, migrateLegacyAudioCache } = require('./audio-cache-storage');
 const ModeratorContent = require('./moderator-content');
+const { SundaiPitchClient, sanitizeRecordingProject } = require('./sundai-pitch');
 const {
   DEFAULT_SETTINGS,
   QUESTION_MAX_TOKENS,
@@ -16,6 +17,7 @@ const {
   safeFilename,
   validateGeneratedQuestion,
   validateMediaDevicePreferences,
+  validateSundaiEnabled,
   validateTimerSettings,
   validateTranscript,
   validateVoice
@@ -29,6 +31,7 @@ let generatedAudioDir;
 let appTempDir;
 let settingsPath;
 let persistedSettings = { ...DEFAULT_SETTINGS };
+const sundaiPitchClient = new SundaiPitchClient();
 
 function createWindow() {
   allowWindowClose = false;
@@ -150,7 +153,10 @@ async function initializeStorage() {
       ...mediaDevicePreferences,
       ttsEnabled: stored.ttsEnabled !== false,
       ttsVoice: validateVoice(stored.ttsVoice || DEFAULT_SETTINGS.ttsVoice),
-      ttsUseKokoro: stored.ttsUseKokoro !== false
+      ttsUseKokoro: stored.ttsUseKokoro !== false,
+      sundaiEnabled: stored.sundaiEnabled === undefined
+        ? DEFAULT_SETTINGS.sundaiEnabled
+        : validateSundaiEnabled(stored.sundaiEnabled)
     };
   } catch (error) {
     if (error.code !== 'ENOENT') {
@@ -161,14 +167,16 @@ async function initializeStorage() {
 
 ipcMain.handle('save-settings', async (event, settings) => {
   const timers = validateTimerSettings(settings);
-  persistedSettings = { ...persistedSettings, ...timers };
+  const sundaiEnabled = validateSundaiEnabled(settings?.sundaiEnabled);
+  persistedSettings = { ...persistedSettings, ...timers, sundaiEnabled };
   await writeSettings();
-  return timers;
+  return { ...timers, sundaiEnabled };
 });
 
 ipcMain.handle('load-settings', async () => ({
   demoTime: persistedSettings.demoTime,
-  qaTime: persistedSettings.qaTime
+  qaTime: persistedSettings.qaTime,
+  sundaiEnabled: persistedSettings.sundaiEnabled
 }));
 
 ipcMain.handle('save-media-device-preferences', async (event, preferences) => {
@@ -187,6 +195,23 @@ ipcMain.handle('get-recordings-path', async () => {
   return recordingsDir;
 });
 
+ipcMain.handle('get-current-sundai-pitch', async () => {
+  if (!persistedSettings.sundaiEnabled) {
+    return { success: false, disabled: true };
+  }
+  try {
+    return {
+      success: true,
+      pitch: await sundaiPitchClient.getCurrentPitch()
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: 'Sundai pitch feed is unavailable'
+    };
+  }
+});
+
 ipcMain.handle('toggle-fullscreen', async () => {
   if (!mainWindow || mainWindow.isDestroyed()) {
     throw new Error('Application window is not available');
@@ -196,7 +221,7 @@ ipcMain.handle('toggle-fullscreen', async () => {
   return { fullscreen };
 });
 
-ipcMain.handle('save-recording', async (event, filename, buffer, transcriptData) => {
+ipcMain.handle('save-recording', async (event, filename, buffer, transcriptData, requestedProjectMetadata) => {
   try {
     const safeVideoFilename = safeFilename(filename, /^demo-(demo|qa)-[\w-]+\.webm$/, 'recording');
     if (!(buffer instanceof Uint8Array) || buffer.byteLength === 0) {
@@ -210,6 +235,9 @@ ipcMain.handle('save-recording', async (event, filename, buffer, transcriptData)
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const demoFolder = path.join(recordingsDir, `demo-${timestamp}`);
     await fs.promises.mkdir(demoFolder, { recursive: true });
+    const projectMetadata = persistedSettings.sundaiEnabled
+      ? sanitizeRecordingProject(requestedProjectMetadata)
+      : null;
 
     // Save video file
     const videoPath = path.join(demoFolder, safeVideoFilename);
@@ -222,7 +250,13 @@ ipcMain.handle('save-recording', async (event, filename, buffer, transcriptData)
       await fs.promises.writeFile(transcriptPath, transcriptData, 'utf8');
     }
 
-    return { videoPath, demoFolder };
+    const metadataPath = path.join(demoFolder, 'metadata.json');
+    await fs.promises.writeFile(metadataPath, JSON.stringify({
+      savedAt: new Date().toISOString(),
+      project: projectMetadata
+    }, null, 2), 'utf8');
+
+    return { videoPath, demoFolder, metadataPath };
   } catch (error) {
     console.error('Error saving recording:', error);
     throw error;

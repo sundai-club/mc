@@ -13,9 +13,13 @@
             <div class="brand" aria-label="SundAI Club Demo Moderator">
                 <div class="brand-mark" aria-hidden="true"><span>S</span><i>AI</i></div>
                 <div class="brand-copy">
-                    <span class="brand-eyebrow">SUNDAI.CLUB // SUNDAY BUILD</span>
+                    <span class="brand-eyebrow">SUNDAI.CLUB</span>
                     <h1>Demo Moderator</h1>
                 </div>
+            </div>
+            <div id="currentHackHeader" class="current-hack-header" data-state="loading" aria-live="polite">
+                <span class="current-hack-label">// CURRENT_HACK</span>
+                <span id="currentPitchEvent" class="current-hack-title">Checking Sundai…</span>
             </div>
             <div class="header-actions">
                 <div class="privacy-badge" title="Transcription, questions, and speech run locally">
@@ -35,6 +39,11 @@
         <div class="main-content">
             <main id="timerView" class="view active">
                 <section id="timerDisplay" class="timer-display" aria-labelledby="currentPhase">
+                    <div id="pitchDebugLine" class="pitch-debug-line" data-state="loading" aria-live="polite">
+                        <span class="pitch-debug-label">// LIVE_PITCH</span>
+                        <span id="currentPitchTitle" class="pitch-debug-title">Checking Sundai…</span>
+                    </div>
+
                     <div class="phase-indicator">
                         <span class="phase-kicker">// CURRENT_STAGE</span>
                         <div class="phase-title">
@@ -239,6 +248,21 @@
                         </div>
                     </div>
 
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <span class="settings-icon" aria-hidden="true">⌁</span>
+                            <div><h2>Event mode</h2><p>Connect this screen to the live Sundai pitch queue.</p></div>
+                        </div>
+                        <div class="form-group compact-group">
+                            <label class="checkbox-label sundai-mode-toggle">
+                                <input type="checkbox" id="sundaiEnabled" checked>
+                                <span class="toggle-track" aria-hidden="true"><span></span></span>
+                                <span id="sundaiModeLabel">Sundai</span>
+                            </label>
+                            <small class="form-help">Non-Sundai mode stops public API requests and hides hack/project information.</small>
+                        </div>
+                    </div>
+
                     <div class="form-actions">
                         <button id="cancelSettingsBtn" class="btn-secondary" type="button">Cancel</button>
                         <button id="saveSettingsBtn" class="btn-primary" type="button">Save changes</button>
@@ -249,6 +273,7 @@
     </div>
 
     <script src="audio-playback-queue.js"></script>
+    <script src="pitch-observation-tracker.js"></script>
     <script src="moderator-content.js"></script>
     <script src="renderer.js"></script>
 </body>

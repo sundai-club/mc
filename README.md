@@ -14,6 +14,7 @@ A desktop application built with Electron for moderating demo presentations with
 - **Automatic Saving**: All recordings saved to `recordings/` folder with timestamps
 - **Live Preview**: See your webcam feed during recording
 - **Stage-readable UI**: Full-screen pixel-art interface with a large green/yellow/red timer
+- **Live Pitch Context**: Shows the current hack in the header and current project above the stage status
 
 ## Prerequisites
 
@@ -93,6 +94,7 @@ The application will:
 - Request camera and microphone permissions
 - Show Whisper model status in Settings
 - Generate one transcript-aware question locally with `qwen3.5:4b-mlx`
+- Fetch the current project title from Sundai's public event API for the small debug line above the stage status
 
 ## How to Use
 
@@ -109,7 +111,9 @@ The application will:
 3. **Live Preview**: Your webcam feed appears in the video preview window
 4. **After Time Expires**: Recording continues as a safety buffer after the timed session completes
 5. **Stop Recording**: Click "Stop & Clear" or press Space/Enter after completion to save, clear the on-screen session, and return to READY; closing the app also saves
-6. **Files Saved**: Recordings and transcripts are saved together under `recordings/`
+6. **Files Saved**: Each session folder under `recordings/` contains the video, transcript, and `metadata.json` with the project title and Sundai link
+
+The saved project is the queue item observed for the greatest amount of recording time. This tolerates the Sundai pitch controller switching away from the previous project shortly after recording starts or advancing to the next project shortly before recording stops.
 
 ### Using Live Transcription
 1. **Check Status**: Go to Settings to verify Whisper model is ready (green checkmark)
@@ -119,11 +123,14 @@ The application will:
 5. **Stop/Clear**: Use "Stop & Clear" to save the recording, clear the session, and return to READY
 6. **Runs Locally**: Transcription stays on this computer
 
+The live-pitch debug line is the one network-backed display: it reads public event and queue state from `www.sundai.club`. Camera, microphone, transcript, recording, question, and voice data are never sent with that request.
+
 ### Customize Settings
 1. **Open Settings**: Click the "Settings" button in the top right
 2. **Adjust Times**: Set demo and Q&A durations (1-60 minutes)
 3. **Check Transcription**: View Whisper model status (✅ ready or ❌ needs setup)
-4. **Save Settings**: Click "Save Settings" to apply changes
+4. **Choose Event Mode**: Keep `Sundai` for the live hack/project feed, or select `Non-Sundai` to hide it and stop all Sundai API requests
+5. **Save Settings**: Click "Save Settings" to apply changes
 
 The voice menu groups the local voices by engine. Qwen includes `Frido`, `Gabriella`, `Serena`, `Vivian`, `Aiden`, and `Eric`. Kokoro includes its highest-ranked American-English female voices, `Heart` and `Bella`, plus two of its highest-ranked American-English male voices, `Michael` and `Fenrir`. Frido remains the default when his local reference is installed. Transition phrases and Settings previews are cached separately per voice, so changing the selection cannot replay audio generated with another voice.
 

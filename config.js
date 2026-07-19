@@ -6,6 +6,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   ttsEnabled: true,
   ttsVoice: 'cl_frido',
   ttsUseKokoro: true,
+  sundaiEnabled: true,
   cameraId: null,
   microphoneId: null
 });
@@ -30,6 +31,13 @@ function validateVoice(voice) {
     throw new Error('Invalid TTS voice');
   }
   return voice;
+}
+
+function validateSundaiEnabled(value) {
+  if (typeof value !== 'boolean') {
+    throw new Error('Sundai mode must be enabled or disabled');
+  }
+  return value;
 }
 
 function validateMediaDevicePreferences(preferences) {
@@ -88,6 +96,7 @@ module.exports = {
   safeFilename,
   validateGeneratedQuestion,
   validateMediaDevicePreferences,
+  validateSundaiEnabled,
   validateTimerSettings,
   validateTranscript,
   validateVoice

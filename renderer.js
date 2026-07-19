@@ -1,5 +1,6 @@
 const ipcRenderer = window.electronAPI;
 const moderatorContent = window.ModeratorContent;
+const PitchObservationTracker = window.PitchObservationTracker;
 
 class DemoModerator {
     constructor() {
@@ -16,7 +17,8 @@ class DemoModerator {
         this.lastPauseTime = null;
         this.settings = {
             demoTime: 2 * 60,
-            qaTime: 2 * 60
+            qaTime: 2 * 60,
+            sundaiEnabled: true
         };
         
         // Recording properties
@@ -65,6 +67,14 @@ class DemoModerator {
 
         this.sessionCompletionPromise = null;
         this.appClosePromise = null;
+
+        // Public Sundai pitch-feed debug line
+        this.pitchPollTimer = null;
+        this.pitchRefreshPending = false;
+        this.lastPitchSnapshot = null;
+        this.sundaiModeApplied = null;
+        this.pitchObservationTracker = new PitchObservationTracker();
+        this.recordingProjectMetadata = null;
 
         // TTS properties
         this.ttsEnabled = true;
@@ -142,8 +152,94 @@ class DemoModerator {
             generatedQuestion: document.getElementById('generatedQuestion'),
             readQuestionBtn: document.getElementById('readQuestionBtn'),
             dismissQuestionBtn: document.getElementById('dismissQuestionBtn'),
-            questionSource: document.getElementById('questionSource')
+            questionSource: document.getElementById('questionSource'),
+            pitchDebugLine: document.getElementById('pitchDebugLine'),
+            currentHackHeader: document.getElementById('currentHackHeader'),
+            currentPitchTitle: document.getElementById('currentPitchTitle'),
+            currentPitchEvent: document.getElementById('currentPitchEvent'),
+            sundaiEnabled: document.getElementById('sundaiEnabled'),
+            sundaiModeLabel: document.getElementById('sundaiModeLabel')
         };
+    }
+
+    initializeSundaiPitchFeed() {
+        if (!this.settings.sundaiEnabled || this.pitchPollTimer) return;
+        void this.refreshSundaiPitch();
+        this.pitchPollTimer = setInterval(() => {
+            void this.refreshSundaiPitch();
+        }, 4_000);
+    }
+
+    async refreshSundaiPitch() {
+        if (!this.settings.sundaiEnabled || this.pitchRefreshPending) return;
+        this.pitchRefreshPending = true;
+
+        try {
+            const result = await ipcRenderer.invoke('get-current-sundai-pitch');
+            if (!this.settings.sundaiEnabled) return;
+            if (!result?.success || !result.pitch) throw new Error('Pitch feed unavailable');
+
+            if (this.isRecording) {
+                this.pitchObservationTracker.observe(result.pitch);
+            }
+            this.lastPitchSnapshot = result.pitch;
+            const hasCurrentProject = Boolean(result.pitch.projectTitle);
+            const projectAuthors = Array.isArray(result.pitch.projectAuthors)
+                ? result.pitch.projectAuthors.filter(Boolean)
+                : [];
+            const pitchByline = projectAuthors.length > 0
+                ? `${result.pitch.projectTitle} by ${projectAuthors.join(', ')}`
+                : result.pitch.projectTitle;
+            this.elements.pitchDebugLine.dataset.state = hasCurrentProject ? 'live' : 'idle';
+            this.elements.currentHackHeader.dataset.state = 'online';
+            this.elements.currentPitchTitle.textContent = hasCurrentProject
+                ? pitchByline
+                : 'No current project';
+            this.elements.currentPitchEvent.textContent = result.pitch.eventTitle;
+            this.elements.currentHackHeader.title = `Current Sundai hack: ${result.pitch.eventTitle}`;
+            this.elements.pitchDebugLine.title = hasCurrentProject
+                ? `Current Sundai pitch: ${pitchByline} — ${result.pitch.eventTitle}`
+                : `No current project selected — ${result.pitch.eventTitle}`;
+        } catch (error) {
+            if (!this.settings.sundaiEnabled) return;
+            this.elements.pitchDebugLine.dataset.state = 'offline';
+            this.elements.currentHackHeader.dataset.state = 'offline';
+            if (this.lastPitchSnapshot) {
+                this.elements.pitchDebugLine.title = 'Showing the last fetched project; Sundai pitch feed is temporarily unavailable';
+                this.elements.currentHackHeader.title = 'Showing the last fetched hack; Sundai pitch feed is temporarily unavailable';
+            } else {
+                this.elements.currentPitchTitle.textContent = 'Pitch feed unavailable';
+                this.elements.currentPitchEvent.textContent = 'Hack unavailable';
+                this.elements.pitchDebugLine.title = 'Could not reach the public Sundai pitch API';
+                this.elements.currentHackHeader.title = 'Could not reach the public Sundai pitch API';
+            }
+        } finally {
+            this.pitchRefreshPending = false;
+        }
+    }
+
+    applySundaiMode() {
+        const enabled = this.settings.sundaiEnabled !== false;
+        const modeChanged = this.sundaiModeApplied !== enabled;
+        this.sundaiModeApplied = enabled;
+        this.elements.currentHackHeader.hidden = !enabled;
+        this.elements.pitchDebugLine.hidden = !enabled;
+        this.updateSundaiModeLabel();
+
+        if (enabled) {
+            if (modeChanged && this.isRecording) this.pitchObservationTracker.start(null);
+            this.initializeSundaiPitchFeed();
+            return;
+        }
+
+        clearInterval(this.pitchPollTimer);
+        this.pitchPollTimer = null;
+        if (modeChanged && this.isRecording) this.pitchObservationTracker.start(null);
+    }
+
+    updateSundaiModeLabel() {
+        const enabled = this.elements.sundaiEnabled?.checked ?? (this.settings.sundaiEnabled !== false);
+        this.elements.sundaiModeLabel.textContent = enabled ? 'Sundai' : 'Non-Sundai';
     }
 
     setupEventListeners() {
@@ -172,6 +268,7 @@ class DemoModerator {
                 void this.previewVoice(event.target.value);
             }
         });
+        this.elements.sundaiEnabled.addEventListener('change', () => this.updateSundaiModeLabel());
         // Inline time editing event listeners
         this.elements.demoTimeDisplay.addEventListener('click', () => this.startTimeEdit('demo'));
         this.elements.qaTimeDisplay.addEventListener('click', () => this.startTimeEdit('qa'));
@@ -214,8 +311,10 @@ class DemoModerator {
             this.settings = settings;
             this.updateTimeDisplays();
             this.updateSettingsInputs();
+            this.applySundaiMode();
         } catch (error) {
             console.error('Failed to load settings:', error);
+            this.applySundaiMode();
         }
     }
 
@@ -231,7 +330,8 @@ class DemoModerator {
 
         this.settings = {
             demoTime: demoMinutes * 60,
-            qaTime: qaMinutes * 60
+            qaTime: qaMinutes * 60,
+            sundaiEnabled: this.elements.sundaiEnabled.checked
         };
 
         try {
@@ -245,6 +345,7 @@ class DemoModerator {
             
             this.updateTimeDisplays();
             this.updateTranscriptPlaceholder();
+            this.applySundaiMode();
             this.hideSettings();
             if (this.currentPhase === 'ready') {
                 this.updateDisplay();
@@ -258,6 +359,8 @@ class DemoModerator {
     updateSettingsInputs() {
         this.elements.demoMinutes.value = Math.floor(this.settings.demoTime / 60);
         this.elements.qaMinutes.value = Math.floor(this.settings.qaTime / 60);
+        this.elements.sundaiEnabled.checked = this.settings.sundaiEnabled !== false;
+        this.updateSundaiModeLabel();
         this.elements.ttsEnabled.checked = this.ttsEnabled;
         this.elements.ttsVoice.value = this.ttsVoice;
     }
@@ -1268,6 +1371,7 @@ class DemoModerator {
 
         try {
             this.recordedChunks = [];
+            this.recordingProjectMetadata = null;
             const mimeTypes = ['video/webm; codecs=vp9', 'video/webm; codecs=vp8', 'video/webm'];
             const mimeType = mimeTypes.find((type) => MediaRecorder.isTypeSupported(type));
             this.mediaRecorder = mimeType
@@ -1283,7 +1387,9 @@ class DemoModerator {
             this.mediaRecorder.onstop = async () => {
                 this.isRecording = false;
                 this.updateRecordingStatus();
-                await this.saveRecording();
+                this.recordingProjectMetadata = this.recordingProjectMetadata || this.pitchObservationTracker.finish();
+                await this.saveRecording(this.recordingProjectMetadata);
+                this.recordingProjectMetadata = null;
                 if (this.recordingStopResolve) {
                     this.recordingStopResolve();
                     this.recordingStopResolve = null;
@@ -1295,6 +1401,7 @@ class DemoModerator {
             
             this.mediaRecorder.start();
             this.isRecording = true;
+            this.pitchObservationTracker.start(this.lastPitchSnapshot);
             this.updateRecordingStatus();
             
 
@@ -1306,6 +1413,7 @@ class DemoModerator {
 
     async stopRecording() {
         if (this.mediaRecorder && this.isRecording) {
+            this.recordingProjectMetadata = this.pitchObservationTracker.finish();
             const stopped = new Promise((resolve) => {
                 this.recordingStopResolve = resolve;
             });
@@ -1358,6 +1466,8 @@ class DemoModerator {
             this.invalidateQuestionGeneration();
             clearInterval(this.timer);
             this.timer = null;
+            clearInterval(this.pitchPollTimer);
+            this.pitchPollTimer = null;
             this.completionTimestamp = null;
 
             await this.stopTranscription();
@@ -1493,12 +1603,26 @@ class DemoModerator {
         }
     }
 
-    generateTranscriptText() {
-        if (this.allTranscriptMessages.length === 0) {
-            return 'No transcript available for this demo.';
+    generateTranscriptText(projectMetadata = null) {
+        const transcriptLines = ['Demo Recording', '='.repeat(50), ''];
+
+        if (projectMetadata?.projectTitle && projectMetadata?.projectUrl) {
+            transcriptLines.push(`Project: ${projectMetadata.projectTitle}`);
+            if (projectMetadata.projectAuthors?.length) {
+                transcriptLines.push(`Authors: ${projectMetadata.projectAuthors.join(', ')}`);
+            }
+            transcriptLines.push(`Project link: ${projectMetadata.projectUrl}`);
+            if (projectMetadata.eventTitle) transcriptLines.push(`Hack: ${projectMetadata.eventTitle}`);
+            if (projectMetadata.eventUrl) transcriptLines.push(`Pitch link: ${projectMetadata.eventUrl}`);
+            transcriptLines.push('');
         }
 
-        const transcriptLines = ['Demo Transcript', '='.repeat(50), ''];
+        transcriptLines.push('Transcript', '-'.repeat(50), '');
+
+        if (this.allTranscriptMessages.length === 0) {
+            transcriptLines.push('No transcript available for this demo.');
+            return transcriptLines.join('\n');
+        }
 
         this.allTranscriptMessages.forEach(msg => {
             const time = new Date(msg.timestamp).toLocaleString();
@@ -1510,7 +1634,7 @@ class DemoModerator {
         return transcriptLines.join('\n');
     }
 
-    async saveRecording() {
+    async saveRecording(projectMetadata = null) {
         if (this.recordedChunks.length === 0) return;
 
         const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
@@ -1522,9 +1646,15 @@ class DemoModerator {
             const uint8Array = new Uint8Array(buffer);
 
             // Generate transcript text
-            const transcriptData = this.generateTranscriptText();
+            const transcriptData = this.generateTranscriptText(projectMetadata);
 
-            const result = await ipcRenderer.invoke('save-recording', filename, uint8Array, transcriptData);
+            const result = await ipcRenderer.invoke(
+                'save-recording',
+                filename,
+                uint8Array,
+                transcriptData,
+                projectMetadata
+            );
             console.log('Recording and transcript saved to:', result.demoFolder);
 
             // Show success message

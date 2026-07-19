@@ -6,6 +6,7 @@ const allowedChannels = new Set([
   'save-media-device-preferences',
   'load-media-device-preferences',
   'get-recordings-path',
+  'get-current-sundai-pitch',
   'toggle-fullscreen',
   'save-recording',
   'check-whisper-ready',

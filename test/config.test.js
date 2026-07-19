@@ -9,6 +9,7 @@ const {
   safeFilename,
   validateGeneratedQuestion,
   validateMediaDevicePreferences,
+  validateSundaiEnabled,
   validateTimerSettings,
   validateTranscript,
   validateVoice
@@ -28,6 +29,14 @@ test('accepts valid timer settings and rejects invalid values', () => {
   assert.throws(() => validateTimerSettings({ demoTime: NaN, qaTime: 120 }));
   assert.throws(() => validateTimerSettings({ demoTime: 30, qaTime: 120 }));
   assert.throws(() => validateTimerSettings({ demoTime: 120, qaTime: 3660 }));
+});
+
+test('defaults to Sundai mode and validates the persisted integration toggle', () => {
+  assert.equal(DEFAULT_SETTINGS.sundaiEnabled, true);
+  assert.equal(validateSundaiEnabled(true), true);
+  assert.equal(validateSundaiEnabled(false), false);
+  assert.throws(() => validateSundaiEnabled('false'));
+  assert.throws(() => validateSundaiEnabled(undefined));
 });
 
 test('accepts configured voice IDs and rejects command-like values', () => {
