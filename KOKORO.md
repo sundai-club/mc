@@ -8,39 +8,36 @@ Kokoro TTS is used to convert text into natural-sounding speech audio files. Thi
 
 ## Prerequisites
 
-- Python 3.9 - 3.12 (Python 3.13+ is not supported)
+- Python 3.10 or newer
 - Virtual environment support (venv)
 - macOS with Homebrew (for current setup)
 
 ## Installation
 
-### 1. Set up Python Virtual Environment
+### Recommended setup
 
-The Kokoro TTS system uses a dedicated Python virtual environment located at `kokoro_env/`.
+The runtime uses a replaceable virtual environment at `kokoro_env/`. Model weights live separately under `models/kokoro/` so rebuilding the environment does not delete them.
 
 ```bash
-# Create the virtual environment (if not already created)
-python3 -m venv kokoro_env
-
-# Activate the virtual environment
-source kokoro_env/bin/activate
+npm run setup-tts
 ```
 
-### 2. Install Kokoro ONNX
+This installs the pinned runtime, downloads both v1.0 model files, verifies their SHA-256 checksums, and lists the installed voices.
+
+### Manual runtime setup
 
 Install the required kokoro_onnx package:
 
 ```bash
-# With virtual environment activated
-pip install kokoro-tts
+python3 -m venv kokoro_env
+kokoro_env/bin/python -m pip install -r requirements-kokoro.txt
 ```
 
 ### 3. Download Model Files
 
 ```
-cd kokoro_env/
-mkdir kokoro_models
-cd kokoro_models
+mkdir -p models/kokoro
+cd models/kokoro
 
 # Download voice data (bin format is preferred)
 wget https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/voices-v1.0.bin

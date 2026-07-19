@@ -21,6 +21,8 @@ A desktop application built with Electron for moderating demo presentations with
 - Webcam and microphone (for recording features)
 - **Whisper CLI** (for local speech-to-text): Install with `brew install whisper-cpp` on macOS or [download from GitHub](https://github.com/ggerganov/whisper.cpp)
 - **FFmpeg** (for audio format conversion): Install with `brew install ffmpeg` on macOS
+- **Ollama** (for local question generation): Install from [ollama.com](https://ollama.com)
+- **Python 3** (for local Kokoro text-to-speech)
 
 ## Installation
 
@@ -29,9 +31,11 @@ A desktop application built with Electron for moderating demo presentations with
 # Clone or download the project
 cd mc
 
-# Install dependencies AND download Whisper model
+# Install dependencies and all local models
 npm run setup
 ```
+
+The first setup downloads Whisper `base.en`, Kokoro v1.0, and `qwen3.5:4b-mlx` through Ollama. It can require more than 5 GB of disk space.
 
 ### Manual Setup
 1. **Install dependencies**:
@@ -45,12 +49,18 @@ npm run setup
    ```
    This downloads a ~142MB local Whisper model for offline speech-to-text.
 
-3. **Install Whisper CLI** (if not already installed):
+3. **Set up Kokoro and the local question model**:
+   ```bash
+   npm run setup-tts
+   npm run pull-question-model
+   ```
+
+4. **Install Whisper CLI** (if not already installed):
    - **macOS**: `brew install whisper-cpp`
    - **Linux**: Follow [whisper.cpp installation guide](https://github.com/ggerganov/whisper.cpp)
    - **Windows**: Download from [whisper.cpp releases](https://github.com/ggerganov/whisper.cpp/releases)
 
-4. **Install FFmpeg** (required for audio conversion):
+5. **Install FFmpeg** (required for audio conversion):
    - **macOS**: `brew install ffmpeg`
    - **Linux**: `sudo apt install ffmpeg` or equivalent for your distribution
    - **Windows**: Download from [ffmpeg.org](https://ffmpeg.org/download.html)
@@ -66,6 +76,7 @@ The application will:
 - Open in a new window (1400x800 for the transcript panel)
 - Request camera and microphone permissions
 - Show Whisper model status in Settings
+- Generate one transcript-aware question locally with `qwen3.5:4b-mlx`
 
 ## How to Use
 
@@ -100,13 +111,16 @@ The application will:
 ```
 mc/
 ├── main.js           # Electron main process with local Whisper integration
+├── preload.js        # Restricted bridge between the UI and Electron
+├── config.js         # Shared defaults and input validation
 ├── index.html        # Application interface with transcript panel
 ├── renderer.js       # Application logic and transcription handling
 ├── styles.css        # Styling and layout with transcript panel styles
 ├── package.json      # Project configuration with Whisper dependencies
 ├── download-model.js # Script to download Whisper model
+├── setup-tts.js      # Kokoro runtime/model setup and verification
 ├── recordings/       # Auto-created folder for video files
-├── models/          # Auto-created folder for Whisper model (ggml-base.en.bin)
+├── models/          # Auto-created folder for verified Whisper/Kokoro weights
 ├── temp/            # Auto-created folder for temporary audio processing
 └── README.md        # This file
 ```
@@ -139,7 +153,10 @@ The application currently uses mouse/touch controls. All functions are accessibl
 ### Application Issues
 - **Won't Start**: Make sure you ran `npm install` or `npm run setup` first
 - **Timer Not Working**: Try refreshing by clicking Reset button
-- **Settings Not Saving**: Ensure you have write permissions in the app directory
+- **Questions Use Fallbacks**: Run `npm run pull-question-model` and verify Ollama is running
+- **First Question Is Slow**: The first `qwen3.5:4b-mlx` request loads the model; subsequent questions are faster while it remains loaded
+- **Kokoro Not Ready**: Run `npm run setup-tts`; if a copied virtualenv is broken, move `kokoro_env` aside first
+- **Settings Not Saving**: Check write access to Electron's per-user application-data directory
 
 ### Performance
 - **Slow Performance**: Close other applications using camera/microphone
@@ -153,6 +170,8 @@ To modify or extend the application:
 1. **Edit Files**: Modify `renderer.js` for functionality, `styles.css` for appearance
 2. **Test Changes**: Run `npm start` to see changes
 3. **Electron Documentation**: Visit [electronjs.org](https://electronjs.org) for advanced features
+
+Run the automated checks with `npm test`.
 
 ## License
 
