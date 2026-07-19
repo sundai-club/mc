@@ -11,7 +11,7 @@
     "setup-tts": "node setup-tts.js",
     "setup-cloned-voice": "node setup-cloned-voice.js",
     "pull-question-model": "ollama pull qwen3.5:4b-mlx",
-    "setup": "npm install && npm run download-model && npm run setup-tts && npm run pull-question-model"
+    "setup": "npm install && npm run download-model && npm run setup-tts && npm run pull-question-model && npm run setup-cloned-voice"
   },
   "keywords": [
     "electron",

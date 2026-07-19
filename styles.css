@@ -1781,11 +1781,6 @@ button:disabled {
     background-size: 16px 16px;
 }
 
-#videoPreview {
-    min-height: 0;
-    image-rendering: pixelated;
-}
-
 .camera-selection {
     inset: auto;
     border: 0;
@@ -2061,6 +2056,23 @@ button:disabled {
     white-space: nowrap;
 }
 
+.session-complete-hint {
+    position: relative;
+    z-index: 1;
+    margin: -2px 0 12px;
+    color: var(--success);
+    font-family: "SF Mono", "Roboto Mono", ui-monospace, Consolas, monospace;
+    font-size: clamp(0.72rem, 1vw, 0.9rem);
+    font-weight: 700;
+    letter-spacing: 0.045em;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+.session-complete-hint[hidden] {
+    display: none;
+}
+
 @media (max-width: 620px) {
     .recording-section:has(.question-display[style*="block"]) .video-preview {
         align-self: flex-start;
@@ -2097,5 +2109,126 @@ button:disabled {
 
     .header-actions > .icon-button {
         width: 34px;
+    }
+}
+
+/* Stage-distance timer -----------------------------------------------------
+   The speaker reads this screen from several feet away, so state and time
+   must remain legible before any of the secondary controls are readable. */
+body.timer-green { --stage: #4df0a8; }
+body.timer-yellow { --stage: #ffd24a; }
+body.timer-red,
+body.timer-red-blinking { --stage: #ff4961; }
+
+body.timer-green,
+body.timer-yellow,
+body.timer-red,
+body.timer-red-blinking {
+    background-color: color-mix(in srgb, var(--stage) 9%, var(--bg));
+}
+
+.timer-display {
+    border: 4px solid var(--stage);
+    background-color: color-mix(in srgb, var(--stage) 12%, #080a10);
+    background-image:
+        linear-gradient(90deg,
+            color-mix(in srgb, var(--stage) 48%, transparent) 0 18px,
+            transparent 18px calc(100% - 18px),
+            color-mix(in srgb, var(--stage) 48%, transparent) calc(100% - 18px)),
+        linear-gradient(color-mix(in srgb, var(--stage) 12%, transparent) 1px, transparent 1px),
+        linear-gradient(90deg, color-mix(in srgb, var(--stage) 12%, transparent) 1px, transparent 1px);
+    background-size: 100% 100%, 24px 24px, 24px 24px;
+    background-repeat: no-repeat, repeat, repeat;
+    box-shadow:
+        8px 8px 0 color-mix(in srgb, var(--stage) 34%, #020308),
+        inset 0 0 0 4px color-mix(in srgb, var(--stage) 30%, transparent);
+}
+
+.timer-display::before {
+    inset: 12px;
+    border: 2px solid color-mix(in srgb, var(--stage) 55%, transparent);
+}
+
+.phase-indicator {
+    padding: 7px 18px 9px;
+    border-color: var(--stage);
+    background: color-mix(in srgb, var(--stage) 17%, #05070b);
+    box-shadow: 4px 4px 0 color-mix(in srgb, var(--stage) 30%, #020308);
+}
+
+.phase-kicker {
+    color: color-mix(in srgb, var(--stage) 76%, white);
+}
+
+.phase-title {
+    font-size: clamp(1.55rem, 2.4vw, 2.35rem);
+}
+
+.time-display {
+    margin: clamp(8px, 1.1vh, 16px) 0 clamp(10px, 1.3vh, 18px);
+    color: var(--stage);
+    font-size: clamp(7.5rem, 19vh, 14rem);
+    line-height: 0.84;
+    text-align: center;
+    text-shadow:
+        6px 6px 0 #020308,
+        0 0 34px color-mix(in srgb, var(--stage) 42%, transparent);
+}
+
+.progress-track {
+    width: min(860px, 92%);
+}
+
+.progress-meta {
+    color: color-mix(in srgb, var(--stage) 72%, #aeb4c2);
+}
+
+.progress-bar {
+    height: 18px;
+    border-color: color-mix(in srgb, var(--stage) 72%, #59637e);
+}
+
+.progress-fill {
+    background: repeating-linear-gradient(
+        90deg,
+        var(--stage) 0 18px,
+        color-mix(in srgb, var(--stage) 52%, #10131c) 18px 22px
+    );
+}
+
+body.timer-red-blinking .timer-display {
+    animation: stageFrameAlert 800ms steps(2, end) infinite;
+}
+
+@keyframes stageFrameAlert {
+    50% {
+        background-color: color-mix(in srgb, var(--stage) 28%, #080a10);
+        box-shadow:
+            8px 8px 0 color-mix(in srgb, var(--stage) 58%, #020308),
+            inset 0 0 0 6px color-mix(in srgb, var(--stage) 62%, transparent);
+    }
+}
+
+@media (max-height: 820px) {
+    .time-display {
+        font-size: clamp(6.5rem, 16vh, 9.5rem);
+    }
+
+    .progress-bar {
+        height: 15px;
+    }
+}
+
+@media (max-height: 680px) and (min-width: 861px) {
+    .phase-title {
+        font-size: 1.3rem;
+    }
+
+    .time-display {
+        font-size: clamp(5.2rem, 13vh, 7rem);
+    }
+
+    .progress-bar {
+        height: 12px;
     }
 }

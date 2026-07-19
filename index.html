@@ -46,6 +46,9 @@
                     <div class="time-display" aria-live="polite">
                         <span id="timeRemaining">00:00</span>
                     </div>
+                    <p id="sessionCompleteHint" class="session-complete-hint" aria-live="polite" hidden>
+                        Session complete — Space or Enter to stop &amp; clear.
+                    </p>
 
                     <div class="progress-track">
                         <div class="progress-meta">
@@ -165,7 +168,7 @@
                 </div>
                 <div class="transcript-footer">
                     <span class="status-dot"></span>
-                    <span>Whisper runs offline</span>
+                    <span>Whisper runs locally</span>
                 </div>
             </aside>
         </div>
@@ -231,7 +234,7 @@
                                 <select id="ttsVoice">
                                     <option value="cl_frido">Loading local voices...</option>
                                 </select>
-                                <small class="form-help">Selecting a voice plays a short local preview.</small>
+                                <small class="form-help">Choose a curated Qwen or Kokoro voice. Selecting one plays a cached local preview.</small>
                             </div>
                         </div>
                     </div>
@@ -246,7 +249,7 @@
     </div>
 
     <script src="audio-playback-queue.js"></script>
-    <script src="moderator-style.js"></script>
+    <script src="moderator-content.js"></script>
     <script src="renderer.js"></script>
 </body>
 </html>

@@ -82,12 +82,32 @@ if (!manifest.reference || !Number.isFinite(manifest.reference.start) ||
   throw new Error('Invalid voice-clone reference metadata');
 }
 
+const referenceDuration = manifest.reference.end - manifest.reference.start;
+const fadeInSeconds = Math.max(0, Number(manifest.reference.fadeInMs) || 0) / 1000;
+const fadeOutSeconds = Math.max(0, Number(manifest.reference.fadeOutMs) || 0) / 1000;
+if (fadeInSeconds + fadeOutSeconds >= referenceDuration) {
+  throw new Error('Voice-clone reference fades must be shorter than the reference');
+}
+const referenceFilters = [
+  'highpass=f=70',
+  'lowpass=f=11500',
+  'loudnorm=I=-18:TP=-2:LRA=7'
+];
+if (fadeInSeconds > 0) {
+  referenceFilters.push(`afade=t=in:st=0:d=${fadeInSeconds}`);
+}
+if (fadeOutSeconds > 0) {
+  referenceFilters.push(
+    `afade=t=out:st=${referenceDuration - fadeOutSeconds}:d=${fadeOutSeconds}`
+  );
+}
+
 run('ffmpeg', [
   '-hide_banner', '-loglevel', 'error', '-y',
   '-ss', String(manifest.reference.start), '-to', String(manifest.reference.end),
   '-i', referenceSourcePath,
   '-vn', '-ac', '1', '-ar', '24000', '-c:a', 'pcm_s16le',
-  '-af', 'highpass=f=70,lowpass=f=11500,loudnorm=I=-18:TP=-2:LRA=7',
+  '-af', referenceFilters.join(','),
   path.join(sampleDir, `${outputPrefix}_reference.wav`)
 ]);
 fs.writeFileSync(

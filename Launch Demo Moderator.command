@@ -13,28 +13,18 @@ APP_DIR="${0:A:h}"
 close_launcher_terminal() {
     # Terminal may be configured to keep cleanly exited shells open. Close only
     # the tab that ran this launcher, even if another Terminal window is active.
-    local launcher_tty
+    local launcher_tty close_job_label close_script
     launcher_tty="$(tty 2>/dev/null)"
     [[ "$TERM_PROGRAM" == "Apple_Terminal" && "$launcher_tty" == /dev/* ]] || return 0
 
-    (
-        sleep 0.3
-        /usr/bin/osascript - "$launcher_tty" <<'APPLESCRIPT'
-on run argv
-    set launcherTTY to item 1 of argv
-    tell application "Terminal"
-        repeat with terminalWindow in windows
-            repeat with terminalTab in tabs of terminalWindow
-                if tty of terminalTab is launcherTTY then
-                    close terminalTab
-                    return
-                end if
-            end repeat
-        end repeat
-    end tell
-end run
-APPLESCRIPT
-    ) </dev/null >/dev/null 2>&1 &!
+    close_script="$APP_DIR/scripts/close-launcher-terminal.applescript"
+    close_job_label="club.sundai.demo-moderator.close-terminal.$PPID.$$"
+
+    # Run outside this shell's process group. Terminal can then observe a clean
+    # shell exit instead of treating the delayed closer as a process in the tab.
+    /bin/launchctl submit -l "$close_job_label" -- \
+        /usr/bin/osascript "$close_script" "$launcher_tty" \
+        </dev/null >/dev/null 2>&1
 }
 
 cd -- "$APP_DIR" || {

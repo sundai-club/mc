@@ -8,16 +8,16 @@ A desktop application built with Electron for moderating demo presentations with
 - **Visual Progress**: Real-time progress bar and countdown display
 - **Timer Controls**: Start, pause, resume, reset, and skip to next phase
 - **Video Recording**: Record demos with webcam and microphone
-- **Local Speech-to-Text**: Real-time transcription using local Whisper model (offline, private)
-- **Local Qwen Voices**: Consented Frido and Gabriella clones plus the built-in Serena, Vivian, and Aiden voices run locally on Apple Silicon
+- **Local Speech-to-Text**: Real-time transcription using an on-device Whisper model (local, private)
+- **Local Moderator Voices**: Consented Frido and Gabriella clones, curated Qwen presets, and four top-ranked Kokoro voices run locally
 - **Live Transcript Panel**: See your speech as text in real-time on the right side
 - **Automatic Saving**: All recordings saved to `recordings/` folder with timestamps
 - **Live Preview**: See your webcam feed during recording
-- **Professional UI**: Modern gradient design with responsive layout
+- **Stage-readable UI**: Full-screen pixel-art interface with a large green/yellow/red timer
 
 ## Prerequisites
 
-- Node.js (version 14 or higher)
+- Node.js 20 or newer
 - npm (comes with Node.js)
 - Webcam and microphone (for recording features)
 - **Whisper CLI** (for local speech-to-text): Install with `brew install whisper-cpp` on macOS or [download from GitHub](https://github.com/ggerganov/whisper.cpp)
@@ -37,7 +37,7 @@ cd mc
 npm run setup
 ```
 
-The first setup downloads Whisper `base.en`, Kokoro v1.0, and `qwen3.5:4b-mlx` through Ollama. It can require more than 5 GB of disk space.
+The first setup downloads Whisper `base.en`, Kokoro v1.0, and `qwen3.5:4b-mlx` through Ollama. On Apple Silicon it also installs the local Qwen voice runtime and models; other platforms skip that optional step. Setup can require more than 5 GB of disk space.
 
 ### Manual Setup
 1. **Install dependencies**:
@@ -49,7 +49,7 @@ The first setup downloads Whisper `base.en`, Kokoro v1.0, and `qwen3.5:4b-mlx` t
    ```bash
    npm run download-model
    ```
-   This downloads a ~142MB local Whisper model for offline speech-to-text.
+   This downloads a ~142MB Whisper model for local speech-to-text.
 
 3. **Set up Kokoro and the local question model**:
    ```bash
@@ -61,7 +61,7 @@ The first setup downloads Whisper `base.en`, Kokoro v1.0, and `qwen3.5:4b-mlx` t
    ```bash
    npm run setup-cloned-voice
    ```
-   The repository includes only the two small, consented reference WAV/transcript pairs required for the Frido and Gabriella voices. Original/full recordings, extracted segments, manifests, generated audio, and downloaded models stay local and are ignored by Git. The setup downloads the local 4-bit Qwen3-TTS Base model for clones and CustomVoice model for preset voices, using roughly 3.2 GB combined. Kokoro remains available internally as a fallback.
+   The repository includes the two small, consented reference WAV/transcript pairs required for the Frido and Gabriella voices, plus audited pre-recorded copies of their fixed announcements and Settings previews. Original/full recordings, extracted segments, manifests, runtime-generated questions, cache files, and downloaded models stay local and are ignored by Git. The setup downloads the local 4-bit Qwen3-TTS Base model for clones and CustomVoice model for preset voices, using roughly 3.2 GB combined. The four curated Kokoro voices come from the separate `npm run setup-tts` step above.
 
    If you have the private source recordings locally and need to rebuild either reference pair, run these before setup:
    ```bash
@@ -86,8 +86,10 @@ Start the demo moderator app:
 npm start
 ```
 
+On macOS, you can instead double-click `Launch Demo Moderator.command` in Finder. Its Terminal window closes automatically after a normal app exit and stays open when startup fails so the error remains visible.
+
 The application will:
-- Open in a new window (1400x800 for the transcript panel)
+- Open full-screen by default with a stage-readable timer and transcript panel
 - Request camera and microphone permissions
 - Show Whisper model status in Settings
 - Generate one transcript-aware question locally with `qwen3.5:4b-mlx`
@@ -95,24 +97,27 @@ The application will:
 ## How to Use
 
 ### Basic Timer Operation
-1. **Start Demo**: Click "Start Demo" to begin the demo phase timer
+1. **Start Demo**: Click "Start Demo", press Space, or press Enter to begin the demo phase timer
 2. **Pause/Resume**: Use the pause button to temporarily stop the timer
-3. **Next Phase**: Skip to Q&A phase or click when demo phase completes
-4. **Reset**: Reset timer back to ready state
+3. **Next Phase**: Skip to Q&A, or let the demo timer transition automatically
+4. **Automatic Finish**: At Q&A `00:00`, the timed session completes automatically; the display then counts negative overrun while camera and transcript capture continue
+5. **Next Presenter**: Press Space or Enter once to stop, save, clear, and return to READY; press again to start the next demo
 
 ### Recording Demos
 1. **Grant Permissions**: Allow camera and microphone access when prompted
-2. **Start Recording**: Click the red "Start Recording" button
+2. **Start Recording**: Start the demo; recording and transcription begin together
 3. **Live Preview**: Your webcam feed appears in the video preview window
-4. **Stop Recording**: Click "Stop Recording" or recording stops automatically when session ends
-5. **Files Saved**: Recordings are automatically saved to the `recordings/` folder
+4. **After Time Expires**: Recording continues as a safety buffer after the timed session completes
+5. **Stop Recording**: Click "Stop & Clear" or press Space/Enter after completion to save, clear the on-screen session, and return to READY; closing the app also saves
+6. **Files Saved**: Recordings and transcripts are saved together under `recordings/`
 
 ### Using Live Transcription
 1. **Check Status**: Go to Settings to verify Whisper model is ready (green checkmark)
-2. **Start Transcription**: Click the 🎤 microphone button in the transcript panel (right side)
-3. **Real-time Text**: Your speech appears as timestamped messages
-4. **Stop/Clear**: Use the stop button or "Clear" to reset transcript
-5. **Works Offline**: Everything runs locally - no internet required!
+2. **Choose a Microphone**: Select the input in Settings; the choice is remembered on this computer
+3. **Start the Demo**: Recording and local transcription begin together
+4. **Real-time Text**: Your speech appears as timestamped messages
+5. **Stop/Clear**: Use "Stop & Clear" to save the recording, clear the session, and return to READY
+6. **Runs Locally**: Transcription stays on this computer
 
 ### Customize Settings
 1. **Open Settings**: Click the "Settings" button in the top right
@@ -120,9 +125,9 @@ The application will:
 3. **Check Transcription**: View Whisper model status (✅ ready or ❌ needs setup)
 4. **Save Settings**: Click "Save Settings" to apply changes
 
-The voice menu shows `Frido`, `Gabriella`, `Serena · Qwen`, `Vivian · Qwen`, and `Aiden · Qwen`. Frido remains the default when his local reference is installed. Serena is warm and gentle, Vivian is bright and youthful, and Aiden is Qwen's clear native-English American male preset. Transition phrases are cached separately per voice, so changing the selection cannot replay audio generated with another voice.
+The voice menu groups the local voices by engine. Qwen includes `Frido`, `Gabriella`, `Serena`, `Vivian`, `Aiden`, and `Eric`. Kokoro includes its highest-ranked American-English female voices, `Heart` and `Bella`, plus two of its highest-ranked American-English male voices, `Michael` and `Fenrir`. Frido remains the default when his local reference is installed. Transition phrases and Settings previews are cached separately per voice, so changing the selection cannot replay audio generated with another voice.
 
-The local moderator prompt and fixed announcements follow a restrained version of Frido's speaking style derived from the consented samples: conversational openings, concrete observations, calibrated claims, and questions that narrow many possible angles to the one point with the biggest leverage. The style rules intentionally avoid accent imitation and excessive filler.
+The local moderator prompt and fixed announcements use the same voice-independent wording rules for every speaker. Voice selection changes only the sound of the moderator, not the wording or personality of generated questions.
 
 ## File Structure
 
@@ -139,10 +144,13 @@ mc/
 ├── setup-tts.js      # Kokoro runtime/model setup and verification
 ├── setup-cloned-voice.js # Local MLX/Qwen voice-clone setup
 ├── qwen_voice_server.py  # Persistent consented-clone worker
-├── moderator-style.js    # Shared local prompt, fallback questions, and announcement copy
+├── moderator-content.js  # Voice-independent prompt, fallback questions, and announcement copy
 ├── audio-playback-queue.js # Prevents announcements from overlapping across sessions
 ├── scripts/build-consented-voice-samples.js # Rebuilds isolated local samples
+├── scripts/close-launcher-terminal.applescript # Closes the Finder launcher tab after exit
+├── pregenerated_audio/voices/ # Audited fixed Frido/Gabriella announcements
 ├── recordings/       # Auto-created folder for video files
+├── audio-cache/      # Runtime-generated audio cache (ignored by Git)
 ├── models/          # Auto-created folder for verified Whisper/Kokoro weights
 ├── temp/            # Auto-created folder for temporary audio processing
 └── README.md        # This file
@@ -158,7 +166,9 @@ mc/
 
 ## Keyboard Shortcuts
 
-The application currently uses mouse/touch controls. All functions are accessible through the graphical interface.
+- **Space or Enter in READY**: Start the demo
+- **Space or Enter after completion**: Stop, save, clear, and return to READY
+- Keyboard shortcuts are ignored while editing a field or using a button/select control
 
 ## Troubleshooting
 
@@ -175,7 +185,7 @@ The application currently uses mouse/touch controls. All functions are accessibl
 
 ### Application Issues
 - **Won't Start**: Make sure you ran `npm install` or `npm run setup` first
-- **Timer Not Working**: Try refreshing by clicking Reset button
+- **Timer Not Working**: Use "Stop & Clear" to return to READY, then start a new session
 - **Questions Use Fallbacks**: Run `npm run pull-question-model` and verify Ollama is running
 - **First Question Is Slow**: The first `qwen3.5:4b-mlx` request loads the model; subsequent questions are faster while it remains loaded
 - **Kokoro Not Ready**: Run `npm run setup-tts`; if a copied virtualenv is broken, move `kokoro_env` aside first

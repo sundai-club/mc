@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 models
 recordings
+audio-cache/
 voice_samples/**
 !voice_samples/frido/
 voice_samples/frido/**

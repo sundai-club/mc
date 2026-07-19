@@ -35,5 +35,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (event, fullscreen) => callback(fullscreen);
     ipcRenderer.on('fullscreen-changed', listener);
     return () => ipcRenderer.removeListener('fullscreen-changed', listener);
+  },
+  onAppCloseRequested(callback) {
+    if (typeof callback !== 'function') {
+      throw new TypeError('App-close callback must be a function');
+    }
+    const listener = () => callback();
+    ipcRenderer.on('app-close-requested', listener);
+    return () => ipcRenderer.removeListener('app-close-requested', listener);
+  },
+  signalAppCloseReady() {
+    ipcRenderer.send('app-close-ready');
   }
 });

@@ -5,7 +5,8 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const http = require('http');
 const { AudioPlaybackQueue } = require('./audio-playback-queue');
-const FridoModeratorStyle = require('./moderator-style');
+const { localAudioCacheDir, migrateLegacyAudioCache } = require('./audio-cache-storage');
+const ModeratorContent = require('./moderator-content');
 const {
   DEFAULT_SETTINGS,
   QUESTION_MAX_TOKENS,
@@ -21,6 +22,8 @@ const {
 } = require('./config');
 
 let mainWindow;
+let allowWindowClose = false;
+let closeFallbackTimer = null;
 let recordingsDir;
 let generatedAudioDir;
 let appTempDir;
@@ -28,6 +31,7 @@ let settingsPath;
 let persistedSettings = { ...DEFAULT_SETTINGS };
 
 function createWindow() {
+  allowWindowClose = false;
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 800,
@@ -68,10 +72,39 @@ function createWindow() {
     mainWindow.webContents.send('fullscreen-changed', false);
   });
 
+  mainWindow.on('close', (event) => {
+    if (allowWindowClose) return;
+    event.preventDefault();
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+
+    mainWindow.webContents.send('app-close-requested');
+    if (!closeFallbackTimer) {
+      closeFallbackTimer = setTimeout(() => {
+        closeFallbackTimer = null;
+        allowWindowClose = true;
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+      }, 30_000);
+    }
+  });
+
   mainWindow.on('closed', () => {
+    if (closeFallbackTimer) {
+      clearTimeout(closeFallbackTimer);
+      closeFallbackTimer = null;
+    }
     mainWindow = null;
   });
 }
+
+ipcMain.on('app-close-ready', (event) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return;
+  allowWindowClose = true;
+  if (closeFallbackTimer) {
+    clearTimeout(closeFallbackTimer);
+    closeFallbackTimer = null;
+  }
+  mainWindow.close();
+});
 
 app.on('window-all-closed', () => {
   app.quit();
@@ -91,10 +124,11 @@ async function writeSettings() {
 
 async function initializeStorage() {
   const dataDir = app.getPath('userData');
+  const legacyAudioCacheDir = path.join(dataDir, 'audio-cache');
   recordingsDir = app.isPackaged
     ? path.join(app.getPath('videos'), 'Demo Moderator')
     : path.join(__dirname, 'recordings');
-  generatedAudioDir = path.join(dataDir, 'audio-cache');
+  generatedAudioDir = localAudioCacheDir(__dirname);
   appTempDir = path.join(app.getPath('temp'), 'demo-moderator');
   settingsPath = path.join(dataDir, 'settings.json');
 
@@ -103,6 +137,8 @@ async function initializeStorage() {
     fs.promises.mkdir(generatedAudioDir, { recursive: true }),
     fs.promises.mkdir(appTempDir, { recursive: true })
   ]);
+
+  await migrateLegacyAudioCache(legacyAudioCacheDir, generatedAudioDir);
 
   try {
     const stored = JSON.parse(await fs.promises.readFile(settingsPath, 'utf8'));
@@ -206,13 +242,13 @@ const CLONED_VOICES = Object.freeze({
     label: 'Frido',
     referenceDir: 'frido',
     referencePrefix: 'frido',
-    cacheRevision: 2
+    cacheRevision: 4
   },
   cl_gabriella: {
     label: 'Gabriella',
     referenceDir: 'gabriella',
     referencePrefix: 'gabriella',
-    cacheRevision: 1
+    cacheRevision: 3
   }
 });
 const QWEN_PRESET_VOICES = Object.freeze({
@@ -229,6 +265,29 @@ const QWEN_PRESET_VOICES = Object.freeze({
   qv_aiden: {
     label: 'Aiden · Qwen',
     speaker: 'Aiden',
+    cacheRevision: 1
+  },
+  qv_eric: {
+    label: 'Eric · Qwen',
+    speaker: 'Eric',
+    cacheRevision: 1
+  }
+});
+const KOKORO_VOICES = Object.freeze({
+  af_heart: {
+    label: 'Heart · Kokoro',
+    cacheRevision: 1
+  },
+  af_bella: {
+    label: 'Bella · Kokoro',
+    cacheRevision: 1
+  },
+  am_michael: {
+    label: 'Michael · Kokoro',
+    cacheRevision: 1
+  },
+  am_fenrir: {
+    label: 'Fenrir · Kokoro',
     cacheRevision: 1
   }
 });
@@ -249,6 +308,20 @@ function getKokoroPythonPath() {
   return process.platform === 'win32'
     ? path.join(__dirname, 'kokoro_env', 'Scripts', 'python.exe')
     : path.join(__dirname, 'kokoro_env', 'bin', 'python');
+}
+
+function kokoroRuntimeIsInstalled() {
+  const modelLocations = [
+    path.join(__dirname, 'models', 'kokoro'),
+    path.join(__dirname, 'kokoro_env', 'kokoro_models'),
+    path.join(__dirname, 'kokoro_env')
+  ];
+  return fs.existsSync(getKokoroPythonPath()) &&
+    fs.existsSync(path.join(__dirname, 'kokoro_tts.py')) &&
+    modelLocations.some(directory =>
+      fs.existsSync(path.join(directory, 'kokoro-v1.0.onnx')) &&
+      fs.existsSync(path.join(directory, 'voices-v1.0.bin'))
+    );
 }
 
 function getClonedVoicePythonPath() {
@@ -314,15 +387,40 @@ function getInstalledQwenVoices() {
     .map(([id, profile]) => ({ id, label: profile.label }));
 }
 
+function getInstalledKokoroVoices() {
+  if (!kokoroRuntimeIsInstalled()) return [];
+  return Object.entries(KOKORO_VOICES).map(([id, profile]) => ({
+    id,
+    label: profile.label
+  }));
+}
+
+function ttsVoiceIsInstalled(voice) {
+  if (isQwenVoice(voice)) return qwenVoiceIsInstalled(voice);
+  return kokoroRuntimeIsInstalled() &&
+    (voice === 'af_sarah' || Object.hasOwn(KOKORO_VOICES, voice));
+}
+
 function voiceCacheFilename(filename, voice = ttsVoice) {
   const extension = path.extname(filename);
   const stem = path.basename(filename, extension);
   const validatedVoice = validateVoice(voice);
-  const qwenVoice = CLONED_VOICES[validatedVoice] || QWEN_PRESET_VOICES[validatedVoice];
-  const cacheVoice = qwenVoice
-    ? `${validatedVoice}_r${qwenVoice.cacheRevision}`
+  const voiceProfile = CLONED_VOICES[validatedVoice] ||
+    QWEN_PRESET_VOICES[validatedVoice] ||
+    KOKORO_VOICES[validatedVoice];
+  const cacheVoice = voiceProfile
+    ? `${validatedVoice}_r${voiceProfile.cacheRevision}`
     : validatedVoice;
   return `${stem}__${cacheVoice}${extension}`;
+}
+
+function bundledVoiceAudioPath(filename, voice = ttsVoice) {
+  return path.join(
+    __dirname,
+    'pregenerated_audio',
+    'voices',
+    voiceCacheFilename(filename, voice)
+  );
 }
 
 function rejectClonedVoiceRequests(error) {
@@ -504,9 +602,16 @@ app.whenReady().then(async () => {
   ttsEnabled = persistedSettings.ttsEnabled;
   ttsVoice = persistedSettings.ttsVoice;
   ttsUseKokoro = persistedSettings.ttsUseKokoro;
-  if (isQwenVoice(ttsVoice) && !qwenVoiceIsInstalled(ttsVoice)) {
-    console.warn('Selected Qwen voice is not installed; falling back to Kokoro af_sarah.');
-    ttsVoice = 'af_sarah';
+  if (!ttsVoiceIsInstalled(ttsVoice)) {
+    const firstAvailableVoice = [
+      ...getInstalledQwenVoices(),
+      ...getInstalledKokoroVoices()
+    ][0]?.id;
+    if (!firstAvailableVoice) {
+      throw new Error('No local TTS voice is installed. Run the voice setup commands.');
+    }
+    console.warn(`Selected voice is unavailable; falling back to ${firstAvailableVoice}.`);
+    ttsVoice = firstAvailableVoice;
     persistedSettings.ttsVoice = ttsVoice;
   }
   await initializeWhisper();
@@ -592,7 +697,7 @@ async function synthesizeSpeechFile(text, voice, outputPath) {
 }
 
 // Play pregenerated audio files
-ipcMain.handle('play-pregenerated-audio', async (event, filename) => {
+ipcMain.handle('play-pregenerated-audio', async (event, filename, requestedVoice = ttsVoice) => {
   const safeAudioFilename = safeFilename(filename, /^(?:[a-z0-9_]+)\.wav$/i, 'audio');
   if (/^question_\d+\.wav$/.test(safeAudioFilename)) {
     const questionPath = path.join(generatedAudioDir, safeAudioFilename);
@@ -602,13 +707,18 @@ ipcMain.handle('play-pregenerated-audio', async (event, filename) => {
     await playAudioFile(questionPath);
     return { success: true };
   }
-  const generatedPath = path.join(generatedAudioDir, voiceCacheFilename(safeAudioFilename));
+  const voice = validateVoice(requestedVoice);
+  const generatedPath = path.join(generatedAudioDir, voiceCacheFilename(safeAudioFilename, voice));
+  const curatedVoicePath = bundledVoiceAudioPath(safeAudioFilename, voice);
   const legacyGeneratedPath = path.join(generatedAudioDir, safeAudioFilename);
   const bundledPath = path.join(__dirname, 'pregenerated_audio', safeAudioFilename);
-  const fallbackPaths = ttsVoice === 'af_sarah'
+  const fallbackPaths = voice === 'af_sarah'
     ? [legacyGeneratedPath, bundledPath]
     : [];
-  const audioPath = [generatedPath, ...fallbackPaths].find(candidate => fs.existsSync(candidate));
+  // Curated fixed takes are versioned with the app and intentionally override
+  // stale stochastic cache files from an earlier local generation.
+  const audioPath = [curatedVoicePath, generatedPath, ...fallbackPaths]
+    .find(candidate => fs.existsSync(candidate));
 
   if (!audioPath) {
     throw new Error(`Pregenerated audio file not found: ${filename}`);
@@ -632,7 +742,8 @@ ipcMain.handle('generate-dynamic-audio', async (event, text, filename, requested
     const safeAudioFilename = safeFilename(filename, /^[a-z0-9_]+\.wav$/i, 'audio');
     const voice = validateVoice(requestedVoice);
     const outputPath = path.join(generatedAudioDir, voiceCacheFilename(safeAudioFilename, voice));
-    if (fs.existsSync(outputPath)) {
+    const curatedVoicePath = bundledVoiceAudioPath(safeAudioFilename, voice);
+    if (fs.existsSync(outputPath) || fs.existsSync(curatedVoicePath)) {
       return { success: true, filename: safeAudioFilename, cached: true };
     }
 
@@ -682,15 +793,20 @@ ipcMain.handle('delete-question-audio', async (event, filename) => {
   return { success: true };
 });
 
-// Only expose the curated local Qwen voices in Settings. Kokoro remains
-// available internally as a fallback but is intentionally hidden for now.
+// Expose a curated set of local Qwen and Kokoro voices in Settings.
 ipcMain.handle('tts-get-voices', async () => {
   const qwenVoices = getInstalledQwenVoices();
+  const kokoroVoices = getInstalledKokoroVoices();
+  const voices = [...qwenVoices, ...kokoroVoices];
   return {
-    success: qwenVoices.length > 0,
-    voices: qwenVoices.map(({ id }) => id),
-    voiceLabels: Object.fromEntries(qwenVoices.map(({ id, label }) => [id, label])),
-    error: qwenVoices.length > 0 ? undefined : 'No local Qwen voices are installed'
+    success: voices.length > 0,
+    voices: voices.map(({ id }) => id),
+    voiceLabels: Object.fromEntries(voices.map(({ id, label }) => [id, label])),
+    voiceGroups: Object.fromEntries([
+      ...qwenVoices.map(({ id }) => [id, 'Qwen']),
+      ...kokoroVoices.map(({ id }) => [id, 'Kokoro'])
+    ]),
+    error: voices.length > 0 ? undefined : 'No local moderator voices are installed'
   };
 });
 
@@ -703,8 +819,8 @@ ipcMain.handle('generate-question', async (event, transcript) => {
       
       const postData = JSON.stringify({
         model: QUESTION_MODEL,
-        system: FridoModeratorStyle.systemPrompt,
-        prompt: FridoModeratorStyle.questionPrompt(normalizedTranscript),
+        system: ModeratorContent.systemPrompt,
+        prompt: ModeratorContent.questionPrompt(normalizedTranscript),
         stream: false,
         think: false,
         keep_alive: '10m',
@@ -773,7 +889,7 @@ ipcMain.handle('generate-question', async (event, transcript) => {
 });
 
 function getFallbackQuestion() {
-  const questions = FridoModeratorStyle.fallbackQuestions;
+  const questions = ModeratorContent.fallbackQuestions;
   const randomQuestion = questions[Math.floor(Math.random() * questions.length)];
   return { success: true, question: randomQuestion, fallback: true };
 }

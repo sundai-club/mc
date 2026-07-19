@@ -37,6 +37,11 @@ test('accepts configured voice IDs and rejects command-like values', () => {
   assert.equal(validateVoice('qv_serena'), 'qv_serena');
   assert.equal(validateVoice('qv_vivian'), 'qv_vivian');
   assert.equal(validateVoice('qv_aiden'), 'qv_aiden');
+  assert.equal(validateVoice('qv_eric'), 'qv_eric');
+  assert.equal(validateVoice('af_heart'), 'af_heart');
+  assert.equal(validateVoice('af_bella'), 'af_bella');
+  assert.equal(validateVoice('am_michael'), 'am_michael');
+  assert.equal(validateVoice('am_fenrir'), 'am_fenrir');
   assert.equal(DEFAULT_SETTINGS.ttsVoice, 'cl_frido');
   assert.throws(() => validateVoice('Samantha'));
   assert.throws(() => validateVoice('../af_sarah'));

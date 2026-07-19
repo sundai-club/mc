@@ -48,7 +48,8 @@ function canImportMlxAudio() {
 
 function main() {
   if (process.platform !== 'darwin' || process.arch !== 'arm64') {
-    throw new Error('The local cloned voices currently require an Apple Silicon Mac.');
+    console.log('Skipping local Qwen voices: cloned voices currently require an Apple Silicon Mac.');
+    return;
   }
   const installedProfiles = VOICE_PROFILES.filter(({ audio, text }) => (
     fs.existsSync(audio) && fs.existsSync(text)
@@ -74,7 +75,7 @@ function main() {
       `from huggingface_hub import snapshot_download; snapshot_download(${JSON.stringify(modelId)})`
     ]);
   }
-  console.log(`Local Qwen voices are ready: ${installedProfiles.map(({ name }) => name).join(', ')}, Serena, Vivian, Aiden.`);
+  console.log(`Local Qwen voices are ready: ${installedProfiles.map(({ name }) => name).join(', ')}, Serena, Vivian, Aiden, Eric.`);
 }
 
 try {
