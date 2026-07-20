@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   DEFAULT_SETTINGS,
   QUESTION_MAX_TOKENS,
+  QUESTION_MAX_WORDS,
   QUESTION_MODEL,
   QUESTION_TIMEOUT_MS,
   safeFilename,
@@ -18,6 +19,7 @@ const {
 test('uses the requested Qwen MLX model by default', () => {
   assert.equal(QUESTION_MODEL, 'qwen3.5:4b-mlx');
   assert.equal(QUESTION_MAX_TOKENS, 256);
+  assert.equal(QUESTION_MAX_WORDS, 28);
   assert.equal(QUESTION_TIMEOUT_MS, 120000);
 });
 
@@ -43,6 +45,7 @@ test('accepts configured voice IDs and rejects command-like values', () => {
   assert.equal(validateVoice('af_sarah'), 'af_sarah');
   assert.equal(validateVoice('cl_frido'), 'cl_frido');
   assert.equal(validateVoice('cl_gabriella'), 'cl_gabriella');
+  assert.equal(validateVoice('cl_abhishek'), 'cl_abhishek');
   assert.equal(validateVoice('qv_serena'), 'qv_serena');
   assert.equal(validateVoice('qv_vivian'), 'qv_vivian');
   assert.equal(validateVoice('qv_aiden'), 'qv_aiden');
@@ -76,7 +79,7 @@ test('normalizes and validates saved media-device preferences', () => {
   assert.throws(() => validateMediaDevicePreferences({ microphoneId: 42 }));
 });
 
-test('accepts only one plain-text question of at most 20 words', () => {
+test('accepts only one plain-text question of at most 28 words', () => {
   assert.equal(
     validateGeneratedQuestion('  Strong privacy design;\n how do you measure transcription accuracy?  '),
     'Strong privacy design; how do you measure transcription accuracy?'
@@ -84,7 +87,7 @@ test('accepts only one plain-text question of at most 20 words', () => {
   assert.throws(() => validateGeneratedQuestion('This is not a question.'));
   assert.throws(() => validateGeneratedQuestion('One question? Another question?'));
   assert.throws(() => validateGeneratedQuestion('**Strong work; how does this scale?**'));
-  assert.throws(() => validateGeneratedQuestion(`${'word '.repeat(20)}question?`));
+  assert.throws(() => validateGeneratedQuestion(`${'word '.repeat(28)}question?`));
 });
 
 test('normalizes usable transcripts and rejects empty or oversized input', () => {

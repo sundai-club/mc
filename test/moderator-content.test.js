@@ -5,9 +5,10 @@ const content = require('../moderator-content');
 const { validateGeneratedQuestion } = require('../config');
 
 test('keeps shared fallback questions within the local question contract', () => {
-  assert.ok(content.systemPrompt.includes('biggest leverage'));
+  assert.ok(content.systemPrompt.includes('this exact project'));
+  assert.ok(content.systemPrompt.includes('could not be asked unchanged'));
   assert.ok(content.systemPrompt.includes('regardless of the selected text-to-speech voice'));
-  assert.doesNotMatch(content.systemPrompt, /Frido|Gabriella/i);
+  assert.doesNotMatch(content.systemPrompt, /Frido|Gabriella|Abhishek/i);
   for (const question of content.fallbackQuestions) {
     assert.equal(validateGeneratedQuestion(question), question);
   }
@@ -38,10 +39,24 @@ test('provides five distinct calm variants for every completion state', () => {
       assert.doesNotMatch(phrase, /amazing|fantastic|incredible|impressive|outstanding/i);
     }
   }
+  for (const phrase of content.completionPhrases.session) {
+    assert.match(phrase, /demo/i);
+    assert.doesNotMatch(phrase, /full session/i);
+  }
+});
+
+test('does not select the same completion variant twice in a row', () => {
+  assert.equal(content.chooseNonRepeatingIndex(5, -1, () => 0.4), 2);
+  assert.equal(content.chooseNonRepeatingIndex(5, 2, () => 0), 3);
+  assert.equal(content.chooseNonRepeatingIndex(5, 2, () => 0.999), 1);
+  assert.equal(content.chooseNonRepeatingIndex(1, 0, () => 0), 0);
 });
 
 test('keeps the transcript isolated inside the generated local prompt', () => {
   const prompt = content.questionPrompt('demo text');
   assert.match(prompt, /<transcript>\ndemo text\n<\/transcript>$/);
-  assert.match(prompt, /at most 20 words total/);
+  assert.match(prompt, /at most 28 words total/);
+  assert.match(prompt, /anchor copied exactly/i);
+  assert.match(prompt, /could not be asked unchanged/i);
+  assert.match(prompt, /unstated factual premise/i);
 });

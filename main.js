@@ -6,6 +6,7 @@ const { spawn } = require('child_process');
 const http = require('http');
 const { AudioPlaybackQueue } = require('./audio-playback-queue');
 const { localAudioCacheDir, migrateLegacyAudioCache } = require('./audio-cache-storage');
+const { compactWaveDurationSeconds } = require('./wav-audio');
 const ModeratorContent = require('./moderator-content');
 const { SundaiPitchClient, sanitizeRecordingProject } = require('./sundai-pitch');
 const {
@@ -283,6 +284,12 @@ const CLONED_VOICES = Object.freeze({
     referenceDir: 'gabriella',
     referencePrefix: 'gabriella',
     cacheRevision: 3
+  },
+  cl_abhishek: {
+    label: 'Abhishek',
+    referenceDir: 'abhishek',
+    referencePrefix: 'abhishek',
+    cacheRevision: 1
   }
 });
 const QWEN_PRESET_VOICES = Object.freeze({
@@ -731,7 +738,12 @@ async function synthesizeSpeechFile(text, voice, outputPath) {
 }
 
 // Play pregenerated audio files
-ipcMain.handle('play-pregenerated-audio', async (event, filename, requestedVoice = ttsVoice) => {
+ipcMain.handle('play-pregenerated-audio', async (
+  event,
+  filename,
+  requestedVoice = ttsVoice,
+  playbackOptions = {}
+) => {
   const safeAudioFilename = safeFilename(filename, /^(?:[a-z0-9_]+)\.wav$/i, 'audio');
   if (/^question_\d+\.wav$/.test(safeAudioFilename)) {
     const questionPath = path.join(generatedAudioDir, safeAudioFilename);
@@ -759,7 +771,9 @@ ipcMain.handle('play-pregenerated-audio', async (event, filename, requestedVoice
   }
 
   try {
-    await playAudioFile(audioPath);
+    await playAudioFile(audioPath, {
+      compactTail: playbackOptions?.compactTail === true
+    });
     return { success: true };
   } catch (error) {
     console.error('Error playing pregenerated audio:', error);
@@ -859,7 +873,9 @@ ipcMain.handle('generate-question', async (event, transcript) => {
         think: false,
         keep_alive: '10m',
         options: {
-          temperature: 0.4,
+          temperature: 0.6,
+          top_p: 0.9,
+          repeat_penalty: 1.1,
           num_predict: QUESTION_MAX_TOKENS
         }
       });
@@ -1059,17 +1075,24 @@ async function speakWithSystem(text, options = {}) {
   });
 }
 
-async function playAudioFile(filePath) {
-  return nativeAudioPlaybackQueue.enqueue(() => playAudioFileNow(filePath));
+async function playAudioFile(filePath, options = {}) {
+  return nativeAudioPlaybackQueue.enqueue(() => playAudioFileNow(filePath, options));
 }
 
-async function playAudioFileNow(filePath) {
+async function playAudioFileNow(filePath, options = {}) {
   return new Promise((resolve, reject) => {
     let command, args;
     
     if (process.platform === 'darwin') {
       command = 'afplay';
-      args = [filePath];
+      if (options.compactTail === true) {
+        const duration = compactWaveDurationSeconds(fs.readFileSync(filePath));
+        args = Number.isFinite(duration)
+          ? ['-t', duration.toFixed(3), filePath]
+          : [filePath];
+      } else {
+        args = [filePath];
+      }
     } else if (process.platform === 'win32') {
       command = 'powershell';
       args = ['-c', `(New-Object Media.SoundPlayer "${filePath}").PlaySync()`];

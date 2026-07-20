@@ -24,6 +24,11 @@ const VOICE_PROFILES = [
     name: 'Gabriella',
     audio: path.join(ROOT, 'voice_samples', 'gabriella', 'gabriella_reference.wav'),
     text: path.join(ROOT, 'voice_samples', 'gabriella', 'gabriella_reference.txt')
+  },
+  {
+    name: 'Abhishek',
+    audio: path.join(ROOT, 'voice_samples', 'abhishek', 'abhishek_reference.wav'),
+    text: path.join(ROOT, 'voice_samples', 'abhishek', 'abhishek_reference.txt')
   }
 ];
 

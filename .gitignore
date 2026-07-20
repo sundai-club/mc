@@ -14,6 +14,11 @@ voice_samples/frido/**
 voice_samples/gabriella/**
 !voice_samples/gabriella/gabriella_reference.wav
 !voice_samples/gabriella/gabriella_reference.txt
+!voice_samples/abhishek/
+voice_samples/abhishek/**
+!voice_samples/abhishek/abhishek_reference.wav
+!voice_samples/abhishek/abhishek_reference.txt
+pregenerated_audio/question_*.wav
 temp
 .idea
 

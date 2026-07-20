@@ -106,6 +106,7 @@ class DemoModerator {
         // Demo completion phrase variants
         this.demoCompletionPhrases = moderatorContent.completionPhrases.demo;
         this.sessionCompletionPhrases = moderatorContent.completionPhrases.session;
+        this.lastCompletionPhraseIndex = { demo: -1, session: -1 };
 
         this.elements = {
             timerDisplay: document.getElementById('timerDisplay'),
@@ -588,13 +589,20 @@ class DemoModerator {
             if (previousPhase === 'demo' && this.currentPhase === 'qa' && !skipQuestionGeneration) {
                 const questionPromise = this.earlyQuestionGenerated && this.earlyQuestionResult
                     ? Promise.resolve(this.earlyQuestionResult)
-                    : (this.questionGenerationPromise || this.generateQuestion());
+                    : this.startEarlyQuestionGeneration();
 
-                // Play announcements immediately without delays
-                await this.speak(moderatorContent.copy.startQuestions(Math.floor(this.timeRemaining / 60)));
+                // Question text and audio are prepared in parallel with these
+                // announcements. Only fill the gap with the thinking line when
+                // the question is genuinely still being prepared.
+                await this.speak(
+                    moderatorContent.copy.startQuestions(Math.floor(this.timeRemaining / 60)),
+                    { compactTail: true }
+                );
                 if (this.phaseRunId !== transitionRunId || this.currentPhase !== 'qa') return;
-                await this.speak(moderatorContent.copy.thinking);
-                if (this.phaseRunId !== transitionRunId || this.currentPhase !== 'qa') return;
+                if (!this.earlyQuestionGenerated) {
+                    await this.speak(moderatorContent.copy.thinking, { compactTail: true });
+                    if (this.phaseRunId !== transitionRunId || this.currentPhase !== 'qa') return;
+                }
 
                 const questionResult = await questionPromise;
                 if (this.phaseRunId !== transitionRunId || this.currentPhase !== 'qa') return;
@@ -662,13 +670,13 @@ class DemoModerator {
             this.updateDisplay();
         }
 
-        // Trigger early question generation at 1 minute into demo phase
-            if (this.currentPhase === 'demo' && this.totalTime > 60 && !this.questionGenerationStarted) {
-            const elapsed = this.totalTime - this.timeRemaining;
-            if (elapsed >= 60) { // 1 minute elapsed
-                this.questionGenerationStarted = true;
-                this.startEarlyQuestionGeneration();
-            }
+        // Start preparing the question and its voice at T-20 seconds so the
+        // prompt benefits from almost the entire demo transcript.
+        if (this.currentPhase === 'demo' &&
+            this.timeRemaining <= 20 &&
+            this.timeRemaining > 0 &&
+            !this.questionGenerationStarted) {
+            void this.startEarlyQuestionGeneration();
         }
 
         // Give 20-second warning for both demo and Q&A phases (trigger at 23 seconds)
@@ -705,8 +713,12 @@ class DemoModerator {
             this.phaseIndex === completedPhaseIndex;
 
         if (completedPhase === 'demo') {
+            // Prepare both the question and its voice while the transition
+            // announcements play, including for short or manually-ended demos.
+            this.startEarlyQuestionGeneration();
+
             // For Demo Phase: immediately transition to Q&A
-            await this.speak(this.getRandomCompletionPhrase('demo'));
+            await this.speak(this.getRandomCompletionPhrase('demo'), { compactTail: true });
             if (!phaseIsStillCurrent()) return;
 
             // Transition immediately to Q&A phase
@@ -740,7 +752,8 @@ class DemoModerator {
             if (document.activeElement?.closest?.('.controls')) {
                 document.activeElement.blur();
             }
-            this.dismissQuestion();
+            // Keep the final generated question visible during overtime. It is
+            // cleared only when the user dismisses it or chooses Stop & Clear.
             this.updateDisplay();
             this.updateRecordingStatus();
 
@@ -795,7 +808,10 @@ class DemoModerator {
             this.elements.timeRemaining.textContent = this.formatTime(this.timeRemaining);
             this.elements.progressFill.style.width = '100%';
             this.elements.timerDisplay.classList.add('completed');
-            this.updateBackgroundColor(this.timeRemaining < 0 ? 'overtime' : 'completed');
+            // Completion is already the start of overtime. Keep the Q&A red
+            // state and begin blinking immediately, including while 00:00 is
+            // displayed during the first elapsed second.
+            this.updateBackgroundColor('overtime');
             // Don't return here, let the button state logic run below
         } else {
             this.elements.sessionCompleteHint.hidden = true;
@@ -837,13 +853,13 @@ class DemoModerator {
         // Remove all timer color classes
         body.classList.remove('timer-green', 'timer-yellow', 'timer-red', 'timer-red-blinking');
 
-        if (state === 'overtime') {
+        if (state === 'overtime' || state === 'completed') {
             body.classList.add('timer-red-blinking');
             return;
         }
         
-        if (state === 'ready' || state === 'completed') {
-            // Green communicates that the app is safely ready for the next presenter.
+        if (state === 'ready') {
+            // Green is reserved for the ready state before the next presenter.
             body.classList.add('timer-green');
             return;
         }
@@ -1218,7 +1234,7 @@ class DemoModerator {
             // Check if this is a phrase that has pregenerated audio
             const pregeneratedFile = await this.getPregeneratedAudioFile(text);
             if (pregeneratedFile) {
-                await this.playPregeneratedAudioNow(pregeneratedFile, text);
+                await this.playPregeneratedAudioNow(pregeneratedFile, text, options);
                 return;
             }
 
@@ -1284,7 +1300,9 @@ class DemoModerator {
             }
 
             this.isTTSSpeaking = true;
-            await ipcRenderer.invoke('play-pregenerated-audio', filename, voice);
+            await ipcRenderer.invoke('play-pregenerated-audio', filename, voice, {
+                compactTail: options.compactTail === true
+            });
         } catch (error) {
             console.error('Error playing pregenerated audio:', error);
             // Fallback to regular TTS if pregenerated audio fails
@@ -2004,7 +2022,8 @@ class DemoModerator {
         if (this.earlyQuestionGenerated) return this.earlyQuestionResult;
         if (this.questionGenerationPromise) return this.questionGenerationPromise;
 
-        console.log('Starting early question generation at 1 minute mark...');
+        this.questionGenerationStarted = true;
+        console.log('Starting background question and voice generation...');
         const generationEpoch = this.questionGenerationEpoch;
         const generationPromise = (async () => {
           try {
@@ -2094,7 +2113,9 @@ class DemoModerator {
                 this.showQuestion(result.question, result.fallback);
 
                 // Voice the question using pregenerated audio if available
-                await new Promise(resolve => setTimeout(resolve, 1000)); // Brief pause
+                // A short beat keeps the spoken handoff natural without adding
+                // a noticeable second of dead air after all preparation is done.
+                await new Promise(resolve => setTimeout(resolve, 250));
                 if (!phaseIsStillCurrent()) return;
 
                 if (this.pregeneratedQuestionAudio) {
@@ -2167,7 +2188,12 @@ class DemoModerator {
             default:
                 phrases = this.sessionCompletionPhrases;
         }
-        const randomIndex = Math.floor(Math.random() * phrases.length);
+        const phraseType = type === 'demo' ? 'demo' : 'session';
+        const randomIndex = moderatorContent.chooseNonRepeatingIndex(
+            phrases.length,
+            this.lastCompletionPhraseIndex[phraseType]
+        );
+        this.lastCompletionPhraseIndex[phraseType] = randomIndex;
         return phrases[randomIndex];
     }
 

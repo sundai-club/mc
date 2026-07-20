@@ -13,6 +13,7 @@ const DEFAULT_SETTINGS = Object.freeze({
 
 const QUESTION_MODEL = process.env.OLLAMA_QUESTION_MODEL || 'qwen3.5:4b-mlx';
 const QUESTION_MAX_TOKENS = 256;
+const QUESTION_MAX_WORDS = 28;
 const QUESTION_TIMEOUT_MS = 120000;
 const WHISPER_MODEL_SHA256 = 'a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002';
 
@@ -65,7 +66,7 @@ function validateGeneratedQuestion(question) {
   const normalized = question.replace(/\s+/g, ' ').trim();
   const wordCount = normalized ? normalized.split(' ').length : 0;
   const questionMarkCount = (normalized.match(/\?/g) || []).length;
-  if (!normalized || wordCount > 20 || questionMarkCount !== 1 ||
+  if (!normalized || wordCount > QUESTION_MAX_WORDS || questionMarkCount !== 1 ||
       !normalized.endsWith('?') || /[*#`]/.test(normalized)) {
     throw new Error('Generated question does not match the required format');
   }
@@ -90,6 +91,7 @@ function safeFilename(filename, pattern, label) {
 module.exports = {
   DEFAULT_SETTINGS,
   QUESTION_MAX_TOKENS,
+  QUESTION_MAX_WORDS,
   QUESTION_MODEL,
   QUESTION_TIMEOUT_MS,
   WHISPER_MODEL_SHA256,

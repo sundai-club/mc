@@ -26,6 +26,10 @@ VOICE_PROFILES = {
         "audio": ROOT / "voice_samples" / "gabriella" / "gabriella_reference.wav",
         "text": ROOT / "voice_samples" / "gabriella" / "gabriella_reference.txt",
     },
+    "cl_abhishek": {
+        "audio": ROOT / "voice_samples" / "abhishek" / "abhishek_reference.wav",
+        "text": ROOT / "voice_samples" / "abhishek" / "abhishek_reference.txt",
+    },
 }
 PRESET_VOICES = {
     "qv_serena": "Serena",
@@ -49,6 +53,12 @@ VOICE_EDGE_TREATMENT = {
         "tail_silence_ms": 700,
     },
     "cl_gabriella": {
+        "fade_in_ms": 0,
+        "fade_out_ms": 0,
+        "lead_silence_ms": 180,
+        "tail_silence_ms": 700,
+    },
+    "cl_abhishek": {
         "fade_in_ms": 0,
         "fade_out_ms": 0,
         "lead_silence_ms": 180,

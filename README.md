@@ -9,7 +9,7 @@ A desktop application built with Electron for moderating demo presentations with
 - **Timer Controls**: Start, pause, resume, reset, and skip to next phase
 - **Video Recording**: Record demos with webcam and microphone
 - **Local Speech-to-Text**: Real-time transcription using an on-device Whisper model (local, private)
-- **Local Moderator Voices**: Consented Frido and Gabriella clones, curated Qwen presets, and four top-ranked Kokoro voices run locally
+- **Local Moderator Voices**: Consented Frido, Gabriella, and Abhishek clones, curated Qwen presets, and four top-ranked Kokoro voices run locally
 - **Live Transcript Panel**: See your speech as text in real-time on the right side
 - **Automatic Saving**: All recordings saved to `recordings/` folder with timestamps
 - **Live Preview**: See your webcam feed during recording
@@ -62,9 +62,9 @@ The first setup downloads Whisper `base.en`, Kokoro v1.0, and `qwen3.5:4b-mlx` t
    ```bash
    npm run setup-cloned-voice
    ```
-   The repository includes the two small, consented reference WAV/transcript pairs required for the Frido and Gabriella voices, plus audited pre-recorded copies of their fixed announcements and Settings previews. Original/full recordings, extracted segments, manifests, runtime-generated questions, cache files, and downloaded models stay local and are ignored by Git. The setup downloads the local 4-bit Qwen3-TTS Base model for clones and CustomVoice model for preset voices, using roughly 3.2 GB combined. The four curated Kokoro voices come from the separate `npm run setup-tts` step above.
+   The repository includes the three compact, consented reference WAV/transcript pairs required for the Frido, Gabriella, and Abhishek voices, plus audited pre-recorded copies of their fixed announcements and Settings previews. Original/full recordings, extracted segments, manifests, runtime-generated questions, cache files, and downloaded models stay local and are ignored by Git. The setup downloads the local 4-bit Qwen3-TTS Base model for clones and CustomVoice model for preset voices, using roughly 3.2 GB combined. The four curated Kokoro voices come from the separate `npm run setup-tts` step above.
 
-   If you have the private source recordings locally and need to rebuild either reference pair, run these before setup:
+   If you have a private source recording locally and need to rebuild a compact reference pair, run this before setup:
    ```bash
    node scripts/build-consented-voice-samples.js
    node scripts/build-consented-voice-samples.js gabriella
@@ -132,7 +132,7 @@ The live-pitch debug line is the one network-backed display: it reads public eve
 4. **Choose Event Mode**: Keep `Sundai` for the live hack/project feed, or select `Non-Sundai` to hide it and stop all Sundai API requests
 5. **Save Settings**: Click "Save Settings" to apply changes
 
-The voice menu groups the local voices by engine. Qwen includes `Frido`, `Gabriella`, `Serena`, `Vivian`, `Aiden`, and `Eric`. Kokoro includes its highest-ranked American-English female voices, `Heart` and `Bella`, plus two of its highest-ranked American-English male voices, `Michael` and `Fenrir`. Frido remains the default when his local reference is installed. Transition phrases and Settings previews are cached separately per voice, so changing the selection cannot replay audio generated with another voice.
+The voice menu groups the local voices by engine. Qwen includes `Frido`, `Gabriella`, `Abhishek`, `Serena`, `Vivian`, `Aiden`, and `Eric`. Kokoro includes its highest-ranked American-English female voices, `Heart` and `Bella`, plus two of its highest-ranked American-English male voices, `Michael` and `Fenrir`. Frido remains the default when his local reference is installed. Transition phrases and Settings previews are cached separately per voice, so changing the selection cannot replay audio generated with another voice.
 
 The local moderator prompt and fixed announcements use the same voice-independent wording rules for every speaker. Voice selection changes only the sound of the moderator, not the wording or personality of generated questions.
 

@@ -8,7 +8,8 @@ const content = require('../moderator-content');
 const projectRoot = path.resolve(__dirname, '..');
 const profiles = [
   { id: 'cl_frido', revision: 4, directory: 'frido', prefix: 'frido' },
-  { id: 'cl_gabriella', revision: 3, directory: 'gabriella', prefix: 'gabriella' }
+  { id: 'cl_gabriella', revision: 3, directory: 'gabriella', prefix: 'gabriella' },
+  { id: 'cl_abhishek', revision: 1, directory: 'abhishek', prefix: 'abhishek' }
 ];
 
 function assertWav(filePath) {
