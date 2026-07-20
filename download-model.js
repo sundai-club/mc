@@ -1,83 +1,103 @@
 #!/usr/bin/env node
 
-const https = require('https');
+const crypto = require('crypto');
 const fs = require('fs');
+const https = require('https');
 const path = require('path');
+const { WHISPER_MODEL_SHA256 } = require('./config');
 
 const MODEL_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin';
 const MODELS_DIR = path.join(__dirname, 'models');
 const MODEL_PATH = path.join(MODELS_DIR, 'ggml-base.en.bin');
+const PARTIAL_PATH = `${MODEL_PATH}.part`;
 
-console.log('🎤 Downloading Whisper base.en model for local transcription...');
-console.log('Model size: ~142MB - this may take a few minutes');
-
-// Create models directory if it doesn't exist
-if (!fs.existsSync(MODELS_DIR)) {
-    fs.mkdirSync(MODELS_DIR, { recursive: true });
+function sha256(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
 }
 
-// Check if model already exists
-if (fs.existsSync(MODEL_PATH)) {
-    console.log('✅ Model already exists at:', MODEL_PATH);
-    process.exit(0);
-}
+function download(url, redirectsRemaining = 5) {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    if (parsedUrl.protocol !== 'https:') {
+      reject(new Error(`Refusing non-HTTPS model URL: ${parsedUrl.href}`));
+      return;
+    }
 
-// Download the model with redirect handling
-function downloadFile(url, attempt = 1) {
-    const file = fs.createWriteStream(MODEL_PATH);
-    let downloadedBytes = 0;
-    let totalBytes = 0;
-
-    https.get(url, (response) => {
-        // Handle redirects
-        if (response.statusCode === 302 || response.statusCode === 301) {
-            if (attempt > 3) {
-                console.error('❌ Too many redirects');
-                process.exit(1);
-            }
-            console.log(`🔄 Redirecting... (${response.headers.location})`);
-            file.close();
-            fs.unlinkSync(MODEL_PATH);
-            return downloadFile(response.headers.location, attempt + 1);
+    const request = https.get(parsedUrl, (response) => {
+      if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
+        response.resume();
+        if (redirectsRemaining === 0 || !response.headers.location) {
+          reject(new Error('Too many or invalid redirects while downloading model'));
+          return;
         }
+        resolve(download(new URL(response.headers.location, parsedUrl).href, redirectsRemaining - 1));
+        return;
+      }
 
-        if (response.statusCode !== 200) {
-            console.error('❌ Failed to download model. Status:', response.statusCode);
-            file.close();
-            fs.unlinkSync(MODEL_PATH);
-            process.exit(1);
-        }
+      if (response.statusCode !== 200) {
+        response.resume();
+        reject(new Error(`Model download returned HTTP ${response.statusCode}`));
+        return;
+      }
 
-    totalBytes = parseInt(response.headers['content-length'], 10);
-    console.log(`📥 Starting download... (${Math.round(totalBytes / 1024 / 1024)}MB)`);
+      const totalBytes = Number(response.headers['content-length']) || 0;
+      let downloadedBytes = 0;
+      const output = fs.createWriteStream(PARTIAL_PATH, { flags: 'w' });
 
-    response.on('data', (chunk) => {
+      response.on('data', (chunk) => {
         downloadedBytes += chunk.length;
-        const percent = ((downloadedBytes / totalBytes) * 100).toFixed(1);
-        const downloadedMB = (downloadedBytes / 1024 / 1024).toFixed(1);
-        const totalMB = (totalBytes / 1024 / 1024).toFixed(1);
-        
-        process.stdout.write(`\r📊 Progress: ${percent}% (${downloadedMB}/${totalMB} MB)`);
-    });
-
-    response.pipe(file);
-
-    file.on('finish', () => {
-        file.close();
-        console.log('\n✅ Whisper model downloaded successfully!');
-        console.log('📍 Location:', MODEL_PATH);
-        console.log('🎯 You can now use local transcription in the demo moderator app.');
-    });
-
-    }).on('error', (err) => {
-        console.error('\n❌ Download failed:', err.message);
-        file.close();
-        if (fs.existsSync(MODEL_PATH)) {
-            fs.unlinkSync(MODEL_PATH);
+        if (totalBytes) {
+          const percent = ((downloadedBytes / totalBytes) * 100).toFixed(1);
+          process.stdout.write(`\rDownloading Whisper base.en: ${percent}%`);
         }
-        process.exit(1);
+      });
+      response.on('error', reject);
+      output.on('error', reject);
+      output.on('finish', () => output.close(resolve));
+      response.pipe(output);
     });
+
+    request.setTimeout(30000, () => request.destroy(new Error('Model download timed out')));
+    request.on('error', reject);
+  });
 }
 
-// Start the download
-downloadFile(MODEL_URL);
+async function main() {
+  fs.mkdirSync(MODELS_DIR, { recursive: true });
+
+  if (fs.existsSync(MODEL_PATH) && await sha256(MODEL_PATH) === WHISPER_MODEL_SHA256) {
+    console.log(`Whisper model verified: ${MODEL_PATH}`);
+    return;
+  }
+
+  if (fs.existsSync(PARTIAL_PATH)) {
+    fs.unlinkSync(PARTIAL_PATH);
+  }
+
+  try {
+    await download(MODEL_URL);
+    process.stdout.write('\n');
+    const digest = await sha256(PARTIAL_PATH);
+    if (digest !== WHISPER_MODEL_SHA256) {
+      throw new Error(`Whisper model checksum mismatch: received ${digest}`);
+    }
+    fs.renameSync(PARTIAL_PATH, MODEL_PATH);
+    console.log(`Whisper model downloaded and verified: ${MODEL_PATH}`);
+  } catch (error) {
+    if (fs.existsSync(PARTIAL_PATH)) {
+      fs.unlinkSync(PARTIAL_PATH);
+    }
+    throw error;
+  }
+}
+
+main().catch((error) => {
+  console.error(`Model setup failed: ${error.message}`);
+  process.exitCode = 1;
+});

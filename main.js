@@ -1,20 +1,52 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const http = require('http');
+const { AudioPlaybackQueue } = require('./audio-playback-queue');
+const { localAudioCacheDir, migrateLegacyAudioCache } = require('./audio-cache-storage');
+const { compactWaveDurationSeconds } = require('./wav-audio');
+const ModeratorContent = require('./moderator-content');
+const { SundaiPitchClient, sanitizeRecordingProject } = require('./sundai-pitch');
+const {
+  DEFAULT_SETTINGS,
+  QUESTION_MAX_TOKENS,
+  QUESTION_MODEL,
+  QUESTION_TIMEOUT_MS,
+  WHISPER_MODEL_SHA256,
+  safeFilename,
+  validateGeneratedQuestion,
+  validateMediaDevicePreferences,
+  validateSundaiEnabled,
+  validateTimerSettings,
+  validateTranscript,
+  validateVoice
+} = require('./config');
 
 let mainWindow;
+let allowWindowClose = false;
+let closeFallbackTimer = null;
+let recordingsDir;
+let generatedAudioDir;
+let appTempDir;
+let settingsPath;
+let persistedSettings = { ...DEFAULT_SETTINGS };
+const sundaiPitchClient = new SundaiPitchClient();
 
 function createWindow() {
+  allowWindowClose = false;
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 800,
+    fullscreen: true,
+    autoHideMenuBar: true,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-      enableRemoteModule: true,
-      webSecurity: false
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true
     },
     icon: path.join(__dirname, 'assets/icon.png'),
     titleBarStyle: 'default',
@@ -24,19 +56,62 @@ function createWindow() {
 
   mainWindow.loadFile('index.html');
 
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    const currentUrl = mainWindow.webContents.getURL();
+    if (navigationUrl !== currentUrl) {
+      event.preventDefault();
+    }
+  });
+
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
   });
 
+  mainWindow.on('enter-full-screen', () => {
+    mainWindow.webContents.send('fullscreen-changed', true);
+  });
+
+  mainWindow.on('leave-full-screen', () => {
+    mainWindow.webContents.send('fullscreen-changed', false);
+  });
+
+  mainWindow.on('close', (event) => {
+    if (allowWindowClose) return;
+    event.preventDefault();
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+
+    mainWindow.webContents.send('app-close-requested');
+    if (!closeFallbackTimer) {
+      closeFallbackTimer = setTimeout(() => {
+        closeFallbackTimer = null;
+        allowWindowClose = true;
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+      }, 30_000);
+    }
+  });
+
   mainWindow.on('closed', () => {
+    if (closeFallbackTimer) {
+      clearTimeout(closeFallbackTimer);
+      closeFallbackTimer = null;
+    }
     mainWindow = null;
   });
 }
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
+ipcMain.on('app-close-ready', (event) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return;
+  allowWindowClose = true;
+  if (closeFallbackTimer) {
+    clearTimeout(closeFallbackTimer);
+    closeFallbackTimer = null;
   }
+  mainWindow.close();
+});
+
+app.on('window-all-closed', () => {
+  app.quit();
 });
 
 app.on('activate', () => {
@@ -45,49 +120,144 @@ app.on('activate', () => {
   }
 });
 
-ipcMain.handle('save-settings', async (event, settings) => {
-  return settings;
-});
-
-ipcMain.handle('load-settings', async () => {
-  return {
-    demoTime: 2 * 60,
-    qaTime: 2 * 60
-  };
-});
-
-// Create recordings directory if it doesn't exist
-const recordingsDir = path.join(__dirname, 'recordings');
-if (!fs.existsSync(recordingsDir)) {
-  fs.mkdirSync(recordingsDir, { recursive: true });
+async function writeSettings() {
+  const temporaryPath = `${settingsPath}.tmp`;
+  await fs.promises.writeFile(temporaryPath, JSON.stringify(persistedSettings, null, 2), 'utf8');
+  await fs.promises.rename(temporaryPath, settingsPath);
 }
+
+async function initializeStorage() {
+  const dataDir = app.getPath('userData');
+  const legacyAudioCacheDir = path.join(dataDir, 'audio-cache');
+  recordingsDir = app.isPackaged
+    ? path.join(app.getPath('videos'), 'Demo Moderator')
+    : path.join(__dirname, 'recordings');
+  generatedAudioDir = localAudioCacheDir(__dirname);
+  appTempDir = path.join(app.getPath('temp'), 'demo-moderator');
+  settingsPath = path.join(dataDir, 'settings.json');
+
+  await Promise.all([
+    fs.promises.mkdir(recordingsDir, { recursive: true }),
+    fs.promises.mkdir(generatedAudioDir, { recursive: true }),
+    fs.promises.mkdir(appTempDir, { recursive: true })
+  ]);
+
+  await migrateLegacyAudioCache(legacyAudioCacheDir, generatedAudioDir);
+
+  try {
+    const stored = JSON.parse(await fs.promises.readFile(settingsPath, 'utf8'));
+    const timers = validateTimerSettings(stored);
+    const mediaDevicePreferences = validateMediaDevicePreferences(stored);
+    persistedSettings = {
+      ...DEFAULT_SETTINGS,
+      ...timers,
+      ...mediaDevicePreferences,
+      ttsEnabled: stored.ttsEnabled !== false,
+      ttsVoice: validateVoice(stored.ttsVoice || DEFAULT_SETTINGS.ttsVoice),
+      ttsUseKokoro: stored.ttsUseKokoro !== false,
+      sundaiEnabled: stored.sundaiEnabled === undefined
+        ? DEFAULT_SETTINGS.sundaiEnabled
+        : validateSundaiEnabled(stored.sundaiEnabled)
+    };
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.warn('Ignoring invalid settings file:', error.message);
+    }
+  }
+}
+
+ipcMain.handle('save-settings', async (event, settings) => {
+  const timers = validateTimerSettings(settings);
+  const sundaiEnabled = validateSundaiEnabled(settings?.sundaiEnabled);
+  persistedSettings = { ...persistedSettings, ...timers, sundaiEnabled };
+  await writeSettings();
+  return { ...timers, sundaiEnabled };
+});
+
+ipcMain.handle('load-settings', async () => ({
+  demoTime: persistedSettings.demoTime,
+  qaTime: persistedSettings.qaTime,
+  sundaiEnabled: persistedSettings.sundaiEnabled
+}));
+
+ipcMain.handle('save-media-device-preferences', async (event, preferences) => {
+  const mediaDevicePreferences = validateMediaDevicePreferences(preferences);
+  persistedSettings = { ...persistedSettings, ...mediaDevicePreferences };
+  await writeSettings();
+  return mediaDevicePreferences;
+});
+
+ipcMain.handle('load-media-device-preferences', async () => ({
+  cameraId: persistedSettings.cameraId,
+  microphoneId: persistedSettings.microphoneId
+}));
 
 ipcMain.handle('get-recordings-path', async () => {
   return recordingsDir;
 });
 
-ipcMain.handle('save-recording', async (event, filename, buffer, transcriptData) => {
+ipcMain.handle('get-current-sundai-pitch', async () => {
+  if (!persistedSettings.sundaiEnabled) {
+    return { success: false, disabled: true };
+  }
   try {
+    return {
+      success: true,
+      pitch: await sundaiPitchClient.getCurrentPitch()
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: 'Sundai pitch feed is unavailable'
+    };
+  }
+});
+
+ipcMain.handle('toggle-fullscreen', async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    throw new Error('Application window is not available');
+  }
+  const fullscreen = !mainWindow.isFullScreen();
+  mainWindow.setFullScreen(fullscreen);
+  return { fullscreen };
+});
+
+ipcMain.handle('save-recording', async (event, filename, buffer, transcriptData, requestedProjectMetadata) => {
+  try {
+    const safeVideoFilename = safeFilename(filename, /^demo-(demo|qa)-[\w-]+\.webm$/, 'recording');
+    if (!(buffer instanceof Uint8Array) || buffer.byteLength === 0) {
+      throw new Error('Recording data is empty or invalid');
+    }
+    if (typeof transcriptData !== 'string' || transcriptData.length > 10 * 1024 * 1024) {
+      throw new Error('Transcript data is invalid or too large');
+    }
+
     // Create demo-specific subfolder
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const demoFolder = path.join(recordingsDir, `demo-${timestamp}`);
-
-    if (!fs.existsSync(demoFolder)) {
-      fs.mkdirSync(demoFolder, { recursive: true });
-    }
+    await fs.promises.mkdir(demoFolder, { recursive: true });
+    const projectMetadata = persistedSettings.sundaiEnabled
+      ? sanitizeRecordingProject(requestedProjectMetadata)
+      : null;
 
     // Save video file
-    const videoPath = path.join(demoFolder, filename);
-    fs.writeFileSync(videoPath, buffer);
+    const videoPath = path.join(demoFolder, safeVideoFilename);
+    await fs.promises.writeFile(videoPath, buffer);
 
     // Save transcript file if provided
     if (transcriptData) {
-      const transcriptFilename = filename.replace(/\.[^.]+$/, '.txt');
+      const transcriptFilename = safeVideoFilename.replace(/\.[^.]+$/, '.txt');
       const transcriptPath = path.join(demoFolder, transcriptFilename);
-      fs.writeFileSync(transcriptPath, transcriptData, 'utf8');
+      await fs.promises.writeFile(transcriptPath, transcriptData, 'utf8');
     }
 
-    return { videoPath, demoFolder };
+    const metadataPath = path.join(demoFolder, 'metadata.json');
+    await fs.promises.writeFile(metadataPath, JSON.stringify({
+      savedAt: new Date().toISOString(),
+      project: projectMetadata
+    }, null, 2), 'utf8');
+
+    return { videoPath, demoFolder, metadataPath };
   } catch (error) {
     console.error('Error saving recording:', error);
     throw error;
@@ -99,24 +269,368 @@ let whisperModelPath = null;
 let isWhisperReady = false;
 
 // Text-to-Speech functionality
-let ttsEnabled = true;
-let ttsVoice = 'af_sarah'; // Kokoro voice name
-let ttsUseKokoro = true;
+let ttsEnabled = DEFAULT_SETTINGS.ttsEnabled;
+let ttsVoice = DEFAULT_SETTINGS.ttsVoice;
+let ttsUseKokoro = DEFAULT_SETTINGS.ttsUseKokoro;
+const CLONED_VOICES = Object.freeze({
+  cl_frido: {
+    label: 'Frido',
+    referenceDir: 'frido',
+    referencePrefix: 'frido',
+    cacheRevision: 4
+  },
+  cl_gabriella: {
+    label: 'Gabriella',
+    referenceDir: 'gabriella',
+    referencePrefix: 'gabriella',
+    cacheRevision: 3
+  },
+  cl_abhishek: {
+    label: 'Abhishek',
+    referenceDir: 'abhishek',
+    referencePrefix: 'abhishek',
+    cacheRevision: 1
+  }
+});
+const QWEN_PRESET_VOICES = Object.freeze({
+  qv_serena: {
+    label: 'Serena · Qwen',
+    speaker: 'Serena',
+    cacheRevision: 1
+  },
+  qv_vivian: {
+    label: 'Vivian · Qwen',
+    speaker: 'Vivian',
+    cacheRevision: 1
+  },
+  qv_aiden: {
+    label: 'Aiden · Qwen',
+    speaker: 'Aiden',
+    cacheRevision: 1
+  },
+  qv_eric: {
+    label: 'Eric · Qwen',
+    speaker: 'Eric',
+    cacheRevision: 1
+  }
+});
+const KOKORO_VOICES = Object.freeze({
+  af_heart: {
+    label: 'Heart · Kokoro',
+    cacheRevision: 1
+  },
+  af_bella: {
+    label: 'Bella · Kokoro',
+    cacheRevision: 1
+  },
+  am_michael: {
+    label: 'Michael · Kokoro',
+    cacheRevision: 1
+  },
+  am_fenrir: {
+    label: 'Fenrir · Kokoro',
+    cacheRevision: 1
+  }
+});
+let clonedVoiceProcess = null;
+let clonedVoiceReadyPromise = null;
+let clonedVoiceReadyResolve = null;
+let clonedVoiceReadyReject = null;
+let clonedVoiceStdout = '';
+let clonedVoiceRequestId = 0;
+const clonedVoiceRequests = new Map();
+const audioGenerationJobs = new Map();
+const nativeAudioPlaybackQueue = new AudioPlaybackQueue();
+
+function getKokoroPythonPath() {
+  if (process.env.KOKORO_PYTHON) {
+    return process.env.KOKORO_PYTHON;
+  }
+  return process.platform === 'win32'
+    ? path.join(__dirname, 'kokoro_env', 'Scripts', 'python.exe')
+    : path.join(__dirname, 'kokoro_env', 'bin', 'python');
+}
+
+function kokoroRuntimeIsInstalled() {
+  const modelLocations = [
+    path.join(__dirname, 'models', 'kokoro'),
+    path.join(__dirname, 'kokoro_env', 'kokoro_models'),
+    path.join(__dirname, 'kokoro_env')
+  ];
+  return fs.existsSync(getKokoroPythonPath()) &&
+    fs.existsSync(path.join(__dirname, 'kokoro_tts.py')) &&
+    modelLocations.some(directory =>
+      fs.existsSync(path.join(directory, 'kokoro-v1.0.onnx')) &&
+      fs.existsSync(path.join(directory, 'voices-v1.0.bin'))
+    );
+}
+
+function getClonedVoicePythonPath() {
+  if (process.env.CLONED_VOICE_PYTHON) {
+    return process.env.CLONED_VOICE_PYTHON;
+  }
+  return process.platform === 'win32'
+    ? path.join(__dirname, 'qwen_tts_env', 'Scripts', 'python.exe')
+    : path.join(__dirname, 'qwen_tts_env', 'bin', 'python');
+}
+
+function qwenVoiceRuntimeIsInstalled() {
+  return process.platform === 'darwin' && process.arch === 'arm64' &&
+    fs.existsSync(getClonedVoicePythonPath()) &&
+    fs.existsSync(path.join(__dirname, 'qwen_voice_server.py'));
+}
+
+function qwenVoiceModelIsInstalled(modelDirectory) {
+  const modelSnapshots = path.join(
+    __dirname,
+    'models',
+    'qwen3-tts-cache',
+    'hub',
+    modelDirectory,
+    'snapshots'
+  );
+  return fs.existsSync(modelSnapshots);
+}
+
+function clonedVoiceIsInstalled(voice) {
+  const profile = CLONED_VOICES[voice];
+  if (!profile || !qwenVoiceRuntimeIsInstalled() || !qwenVoiceModelIsInstalled(
+    'models--mlx-community--Qwen3-TTS-12Hz-0.6B-Base-4bit'
+  )) return false;
+  const referenceBase = path.join(__dirname, 'voice_samples', profile.referenceDir, profile.referencePrefix);
+  return fs.existsSync(`${referenceBase}_reference.wav`) &&
+    fs.existsSync(`${referenceBase}_reference.txt`);
+}
+
+function qwenPresetVoiceIsInstalled(voice) {
+  return Object.hasOwn(QWEN_PRESET_VOICES, voice) &&
+    qwenVoiceRuntimeIsInstalled() &&
+    qwenVoiceModelIsInstalled('models--mlx-community--Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit');
+}
+
+function isClonedVoice(voice) {
+  return Object.hasOwn(CLONED_VOICES, voice);
+}
+
+function isQwenVoice(voice) {
+  return isClonedVoice(voice) || Object.hasOwn(QWEN_PRESET_VOICES, voice);
+}
+
+function qwenVoiceIsInstalled(voice) {
+  return isClonedVoice(voice)
+    ? clonedVoiceIsInstalled(voice)
+    : qwenPresetVoiceIsInstalled(voice);
+}
+
+function getInstalledQwenVoices() {
+  return [...Object.entries(CLONED_VOICES), ...Object.entries(QWEN_PRESET_VOICES)]
+    .filter(([voice]) => qwenVoiceIsInstalled(voice))
+    .map(([id, profile]) => ({ id, label: profile.label }));
+}
+
+function getInstalledKokoroVoices() {
+  if (!kokoroRuntimeIsInstalled()) return [];
+  return Object.entries(KOKORO_VOICES).map(([id, profile]) => ({
+    id,
+    label: profile.label
+  }));
+}
+
+function ttsVoiceIsInstalled(voice) {
+  if (isQwenVoice(voice)) return qwenVoiceIsInstalled(voice);
+  return kokoroRuntimeIsInstalled() &&
+    (voice === 'af_sarah' || Object.hasOwn(KOKORO_VOICES, voice));
+}
+
+function voiceCacheFilename(filename, voice = ttsVoice) {
+  const extension = path.extname(filename);
+  const stem = path.basename(filename, extension);
+  const validatedVoice = validateVoice(voice);
+  const voiceProfile = CLONED_VOICES[validatedVoice] ||
+    QWEN_PRESET_VOICES[validatedVoice] ||
+    KOKORO_VOICES[validatedVoice];
+  const cacheVoice = voiceProfile
+    ? `${validatedVoice}_r${voiceProfile.cacheRevision}`
+    : validatedVoice;
+  return `${stem}__${cacheVoice}${extension}`;
+}
+
+function bundledVoiceAudioPath(filename, voice = ttsVoice) {
+  return path.join(
+    __dirname,
+    'pregenerated_audio',
+    'voices',
+    voiceCacheFilename(filename, voice)
+  );
+}
+
+function rejectClonedVoiceRequests(error) {
+  for (const request of clonedVoiceRequests.values()) {
+    clearTimeout(request.timeout);
+    request.reject(error);
+  }
+  clonedVoiceRequests.clear();
+}
+
+function clearClonedVoiceProcess(error = null) {
+  if (error && clonedVoiceReadyReject) {
+    clonedVoiceReadyReject(error);
+  }
+  if (error) {
+    rejectClonedVoiceRequests(error);
+  }
+  clonedVoiceProcess = null;
+  clonedVoiceReadyPromise = null;
+  clonedVoiceReadyResolve = null;
+  clonedVoiceReadyReject = null;
+  clonedVoiceStdout = '';
+}
+
+function handleClonedVoiceMessage(message) {
+  if (message.type === 'ready') {
+    console.log(`Qwen voice worker ready: ${(message.models || [message.model]).filter(Boolean).join(', ')}`);
+    if (clonedVoiceReadyResolve) clonedVoiceReadyResolve();
+    clonedVoiceReadyResolve = null;
+    clonedVoiceReadyReject = null;
+    return;
+  }
+
+  if (message.type === 'fatal') {
+    clearClonedVoiceProcess(new Error(message.error || 'Cloned voice worker failed'));
+    return;
+  }
+
+  const pending = clonedVoiceRequests.get(String(message.id));
+  if (!pending) return;
+  clearTimeout(pending.timeout);
+  clonedVoiceRequests.delete(String(message.id));
+  if (message.type === 'result') {
+    pending.resolve(message.output);
+  } else {
+    pending.reject(new Error(message.error || 'Cloned voice synthesis failed'));
+  }
+}
+
+function startClonedVoiceProcess() {
+  if (clonedVoiceReadyPromise) return clonedVoiceReadyPromise;
+  if (!qwenVoiceRuntimeIsInstalled() || getInstalledQwenVoices().length === 0) {
+    return Promise.reject(new Error('No local Qwen voice is installed. Run npm run setup-cloned-voice.'));
+  }
+
+  const pythonPath = getClonedVoicePythonPath();
+  const scriptPath = path.join(__dirname, 'qwen_voice_server.py');
+  const processInstance = spawn(pythonPath, [scriptPath], {
+    cwd: __dirname,
+    env: {
+      ...process.env,
+      HF_HOME: path.join(__dirname, 'models', 'qwen3-tts-cache'),
+      TOKENIZERS_PARALLELISM: 'false'
+    },
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  clonedVoiceProcess = processInstance;
+  clonedVoiceReadyPromise = new Promise((resolve, reject) => {
+    clonedVoiceReadyResolve = resolve;
+    clonedVoiceReadyReject = reject;
+  });
+  const startupTimeout = setTimeout(() => {
+    if (clonedVoiceReadyReject) {
+      clonedVoiceReadyReject(new Error('Cloned voice model took too long to start'));
+      clonedVoiceReadyReject = null;
+    }
+    processInstance.kill();
+  }, 120000);
+  clonedVoiceReadyPromise.finally(() => clearTimeout(startupTimeout)).catch(() => {});
+
+  processInstance.stdout.on('data', (data) => {
+    clonedVoiceStdout += data.toString();
+    const lines = clonedVoiceStdout.split('\n');
+    clonedVoiceStdout = lines.pop();
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        handleClonedVoiceMessage(JSON.parse(trimmed));
+      } catch (error) {
+        console.log('Cloned voice:', trimmed);
+      }
+    }
+  });
+  processInstance.stderr.on('data', (data) => {
+    const message = data.toString().trim();
+    if (message) console.log('Cloned voice:', message);
+  });
+  processInstance.on('error', (error) => {
+    if (clonedVoiceProcess === processInstance) clearClonedVoiceProcess(error);
+  });
+  processInstance.on('close', (code) => {
+    if (clonedVoiceProcess === processInstance) {
+      clearClonedVoiceProcess(new Error(`Cloned voice worker exited with code ${code}`));
+    }
+  });
+
+  return clonedVoiceReadyPromise;
+}
+
+async function synthesizeWithClonedVoice(text, voice, outputPath) {
+  if (!qwenVoiceIsInstalled(voice)) {
+    const profile = CLONED_VOICES[voice] || QWEN_PRESET_VOICES[voice];
+    throw new Error(`${profile?.label || voice} voice is not installed`);
+  }
+  await startClonedVoiceProcess();
+  if (!clonedVoiceProcess || clonedVoiceProcess.killed || !clonedVoiceProcess.stdin.writable) {
+    throw new Error('Cloned voice worker is unavailable');
+  }
+
+  const id = String(++clonedVoiceRequestId);
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      clonedVoiceRequests.delete(id);
+      reject(new Error('Cloned voice synthesis timed out'));
+    }, 120000);
+    clonedVoiceRequests.set(id, { resolve, reject, timeout });
+    clonedVoiceProcess.stdin.write(`${JSON.stringify({ id, text, voice, output: outputPath })}\n`, (error) => {
+      if (error) {
+        clearTimeout(timeout);
+        clonedVoiceRequests.delete(id);
+        reject(error);
+      }
+    });
+  });
+}
+
+function stopClonedVoiceProcess() {
+  if (!clonedVoiceProcess) return;
+  const processInstance = clonedVoiceProcess;
+  clearClonedVoiceProcess(new Error('Application is closing'));
+  processInstance.stdin.end();
+  processInstance.kill();
+}
+
+app.on('before-quit', stopClonedVoiceProcess);
 
 // Initialize Whisper model on startup
 async function initializeWhisper() {
   const modelsDir = path.join(__dirname, 'models');
   const modelPath = path.join(modelsDir, 'ggml-base.en.bin');
   
-  if (!fs.existsSync(modelsDir)) {
-    fs.mkdirSync(modelsDir, { recursive: true });
-  }
-  
-  // Check if model exists
   if (fs.existsSync(modelPath)) {
-    whisperModelPath = modelPath;
-    isWhisperReady = true;
-    console.log('Whisper model found:', modelPath);
+    const digest = await new Promise((resolve, reject) => {
+      const hash = crypto.createHash('sha256');
+      const stream = fs.createReadStream(modelPath);
+      stream.on('data', (chunk) => hash.update(chunk));
+      stream.on('end', () => resolve(hash.digest('hex')));
+      stream.on('error', reject);
+    });
+
+    if (digest === WHISPER_MODEL_SHA256) {
+      whisperModelPath = modelPath;
+      isWhisperReady = true;
+      console.log('Whisper model verified:', modelPath);
+      return;
+    }
+
+    console.error('Whisper model checksum mismatch. Run npm run download-model again.');
     return;
   }
   
@@ -124,10 +638,28 @@ async function initializeWhisper() {
   console.log('Download from: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin');
 }
 
-// Initialize whisper when app is ready
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await initializeStorage();
+  ttsEnabled = persistedSettings.ttsEnabled;
+  ttsVoice = persistedSettings.ttsVoice;
+  ttsUseKokoro = persistedSettings.ttsUseKokoro;
+  if (!ttsVoiceIsInstalled(ttsVoice)) {
+    const firstAvailableVoice = [
+      ...getInstalledQwenVoices(),
+      ...getInstalledKokoroVoices()
+    ][0]?.id;
+    if (!firstAvailableVoice) {
+      throw new Error('No local TTS voice is installed. Run the voice setup commands.');
+    }
+    console.warn(`Selected voice is unavailable; falling back to ${firstAvailableVoice}.`);
+    ttsVoice = firstAvailableVoice;
+    persistedSettings.ttsVoice = ttsVoice;
+  }
+  await initializeWhisper();
   createWindow();
-  initializeWhisper();
+}).catch((error) => {
+  console.error('Application startup failed:', error);
+  app.quit();
 });
 
 ipcMain.handle('check-whisper-ready', async () => {
@@ -151,8 +683,15 @@ ipcMain.handle('tts-speak', async (event, text, options = {}) => {
 
 ipcMain.handle('tts-set-config', async (event, config) => {
   ttsEnabled = config.enabled !== false;
-  ttsVoice = config.voice || 'af_sarah';
+  ttsVoice = validateVoice(config.voice || DEFAULT_SETTINGS.ttsVoice);
   ttsUseKokoro = config.useKokoro !== false;
+  persistedSettings = {
+    ...persistedSettings,
+    ttsEnabled,
+    ttsVoice,
+    ttsUseKokoro
+  };
+  await writeSettings();
   return { success: true };
 });
 
@@ -160,16 +699,81 @@ ipcMain.handle('tts-get-config', async () => {
   return { enabled: ttsEnabled, voice: ttsVoice, useKokoro: ttsUseKokoro };
 });
 
-// Play pregenerated audio files
-ipcMain.handle('play-pregenerated-audio', async (event, filename) => {
-  const audioPath = path.join(__dirname, 'pregenerated_audio', filename);
+function synthesizeWithKokoro(text, voice, outputPath) {
+  return new Promise((resolve, reject) => {
+    const pythonPath = getKokoroPythonPath();
+    const scriptPath = path.join(__dirname, 'kokoro_tts.py');
+    const ttsProcess = spawn(pythonPath, [
+      scriptPath,
+      '--text', text,
+      '--voice', voice,
+      '--output', outputPath,
+      '--no-play'
+    ]);
+    let error = '';
+    ttsProcess.stderr.on('data', (data) => {
+      error += data.toString();
+    });
+    ttsProcess.on('close', (code) => {
+      if (code === 0 && fs.existsSync(outputPath)) {
+        resolve(outputPath);
+      } else {
+        reject(new Error(`Kokoro TTS failed with code ${code}: ${error}`));
+      }
+    });
+    ttsProcess.on('error', (processError) => {
+      reject(new Error(`Failed to start Kokoro TTS: ${processError.message}`));
+    });
+  });
+}
 
-  if (!fs.existsSync(audioPath)) {
+async function synthesizeSpeechFile(text, voice, outputPath) {
+  if (isQwenVoice(voice)) {
+    return synthesizeWithClonedVoice(text, voice, outputPath);
+  }
+  if (!ttsUseKokoro) {
+    throw new Error('System TTS does not support audio-file generation');
+  }
+  return synthesizeWithKokoro(text, voice, outputPath);
+}
+
+// Play pregenerated audio files
+ipcMain.handle('play-pregenerated-audio', async (
+  event,
+  filename,
+  requestedVoice = ttsVoice,
+  playbackOptions = {}
+) => {
+  const safeAudioFilename = safeFilename(filename, /^(?:[a-z0-9_]+)\.wav$/i, 'audio');
+  if (/^question_\d+\.wav$/.test(safeAudioFilename)) {
+    const questionPath = path.join(generatedAudioDir, safeAudioFilename);
+    if (!fs.existsSync(questionPath)) {
+      throw new Error(`Generated question audio file not found: ${filename}`);
+    }
+    await playAudioFile(questionPath);
+    return { success: true };
+  }
+  const voice = validateVoice(requestedVoice);
+  const generatedPath = path.join(generatedAudioDir, voiceCacheFilename(safeAudioFilename, voice));
+  const curatedVoicePath = bundledVoiceAudioPath(safeAudioFilename, voice);
+  const legacyGeneratedPath = path.join(generatedAudioDir, safeAudioFilename);
+  const bundledPath = path.join(__dirname, 'pregenerated_audio', safeAudioFilename);
+  const fallbackPaths = voice === 'af_sarah'
+    ? [legacyGeneratedPath, bundledPath]
+    : [];
+  // Curated fixed takes are versioned with the app and intentionally override
+  // stale stochastic cache files from an earlier local generation.
+  const audioPath = [curatedVoicePath, generatedPath, ...fallbackPaths]
+    .find(candidate => fs.existsSync(candidate));
+
+  if (!audioPath) {
     throw new Error(`Pregenerated audio file not found: ${filename}`);
   }
 
   try {
-    await playAudioFile(audioPath);
+    await playAudioFile(audioPath, {
+      compactTail: playbackOptions?.compactTail === true
+    });
     return { success: true };
   } catch (error) {
     console.error('Error playing pregenerated audio:', error);
@@ -178,53 +782,28 @@ ipcMain.handle('play-pregenerated-audio', async (event, filename) => {
 });
 
 // Generate dynamic audio for time-based phrases
-ipcMain.handle('generate-dynamic-audio', async (event, text, filename) => {
+ipcMain.handle('generate-dynamic-audio', async (event, text, filename, requestedVoice = ttsVoice) => {
   try {
-    const audioDir = path.join(__dirname, 'pregenerated_audio');
-    if (!fs.existsSync(audioDir)) {
-      fs.mkdirSync(audioDir, { recursive: true });
+    if (typeof text !== 'string' || text.length === 0 || text.length > 1000) {
+      throw new Error('Invalid TTS text');
     }
-
-    const outputPath = path.join(audioDir, filename);
+    const safeAudioFilename = safeFilename(filename, /^[a-z0-9_]+\.wav$/i, 'audio');
+    const voice = validateVoice(requestedVoice);
+    const outputPath = path.join(generatedAudioDir, voiceCacheFilename(safeAudioFilename, voice));
+    const curatedVoicePath = bundledVoiceAudioPath(safeAudioFilename, voice);
+    if (fs.existsSync(outputPath) || fs.existsSync(curatedVoicePath)) {
+      return { success: true, filename: safeAudioFilename, cached: true };
+    }
 
     // Use TTS to generate the audio file
-    if (ttsUseKokoro) {
-      const pythonPath = path.join(__dirname, 'kokoro_env', 'bin', 'python');
-      const scriptPath = path.join(__dirname, 'kokoro_tts.py');
-
-      return new Promise((resolve, reject) => {
-        const args = [
-          scriptPath,
-          '--text', text,
-          '--voice', ttsVoice,
-          '--output', outputPath,
-          '--no-play'
-        ];
-
-        const ttsProcess = spawn(pythonPath, args);
-
-        let error = '';
-
-        ttsProcess.stderr.on('data', (data) => {
-          error += data.toString();
-        });
-
-        ttsProcess.on('close', (code) => {
-          if (code === 0 && fs.existsSync(outputPath)) {
-            resolve({ success: true, filename: filename });
-          } else {
-            reject(new Error(`Dynamic audio generation failed with code ${code}: ${error}`));
-          }
-        });
-
-        ttsProcess.on('error', (err) => {
-          reject(new Error(`Failed to start dynamic audio generation: ${err.message}`));
-        });
-      });
-    } else {
-      // For system TTS, we'll skip file generation and use live TTS
-      return { success: false, reason: 'System TTS does not support file generation' };
+    let generationJob = audioGenerationJobs.get(outputPath);
+    if (!generationJob) {
+      generationJob = synthesizeSpeechFile(text, voice, outputPath)
+        .finally(() => audioGenerationJobs.delete(outputPath));
+      audioGenerationJobs.set(outputPath, generationJob);
     }
+    await generationJob;
+    return { success: true, filename: safeAudioFilename };
   } catch (error) {
     console.error('Error in generate-dynamic-audio:', error);
     throw error;
@@ -234,120 +813,71 @@ ipcMain.handle('generate-dynamic-audio', async (event, text, filename) => {
 // Generate audio for questions
 ipcMain.handle('generate-question-audio', async (event, text) => {
   try {
-    const pythonPath = path.join(__dirname, 'kokoro_env', 'bin', 'python');
-    const scriptPath = path.join(__dirname, 'kokoro_tts.py');
-
-    // Create pregenerated_audio directory if it doesn't exist
-    const audioDir = path.join(__dirname, 'pregenerated_audio');
-    if (!fs.existsSync(audioDir)) {
-      fs.mkdirSync(audioDir, { recursive: true });
+    if (typeof text !== 'string' || text.length === 0 || text.length > 1000) {
+      throw new Error('Invalid question text');
     }
-
     // Generate unique filename for this question
     const timestamp = Date.now();
     const filename = `question_${timestamp}.wav`;
-    const outputPath = path.join(audioDir, filename);
-
-    return new Promise((resolve, reject) => {
-      const args = [
-        scriptPath,
-        '--text', text,
-        '--voice', ttsVoice,
-        '--output', outputPath,
-        '--no-play'
-      ];
-
-      const ttsProcess = spawn(pythonPath, args);
-
-      let error = '';
-
-      ttsProcess.stderr.on('data', (data) => {
-        error += data.toString();
-      });
-
-      ttsProcess.on('close', (code) => {
-        if (code === 0 && fs.existsSync(outputPath)) {
-          resolve({ success: true, filename: filename });
-        } else {
-          reject(new Error(`Question audio generation failed with code ${code}: ${error}`));
-        }
-      });
-
-      ttsProcess.on('error', (err) => {
-        reject(new Error(`Failed to start question audio generation: ${err.message}`));
-      });
-    });
+    const outputPath = path.join(generatedAudioDir, filename);
+    await synthesizeSpeechFile(text, ttsVoice, outputPath);
+    return { success: true, filename };
   } catch (error) {
     console.error('Error in generate-question-audio:', error);
     throw error;
   }
 });
 
-// Get available Kokoro voices
-ipcMain.handle('tts-get-kokoro-voices', async () => {
+ipcMain.handle('delete-question-audio', async (event, filename) => {
+  const safeAudioFilename = safeFilename(filename, /^question_\d+\.wav$/, 'question audio');
+  const audioPath = path.join(generatedAudioDir, safeAudioFilename);
   try {
-    const pythonPath = path.join(__dirname, 'kokoro_env', 'bin', 'python');
-    const scriptPath = path.join(__dirname, 'kokoro_tts.py');
-    
-    return new Promise((resolve, reject) => {
-      const process = spawn(pythonPath, [scriptPath, '--list-voices']);
-      
-      let output = '';
-      let error = '';
-      
-      process.stdout.on('data', (data) => {
-        output += data.toString();
-      });
-      
-      process.stderr.on('data', (data) => {
-        error += data.toString();
-      });
-      
-      process.on('close', (code) => {
-        if (code === 0) {
-          const lines = output.split('\n');
-          const voices = [];
-          let inVoicesList = false;
-          
-          for (const line of lines) {
-            if (line.includes('Available voices:')) {
-              inVoicesList = true;
-              continue;
-            }
-            if (inVoicesList && line.trim().startsWith('- ')) {
-              voices.push(line.trim().substring(2));
-            }
-          }
-          
-          resolve({ success: true, voices });
-        } else {
-          console.error('Error getting Kokoro voices:', error);
-          resolve({ success: false, error: error });
-        }
-      });
-    });
+    await fs.promises.unlink(audioPath);
   } catch (error) {
-    console.error('Error in tts-get-kokoro-voices:', error);
-    return { success: false, error: error.message };
+    if (error.code !== 'ENOENT') {
+      throw error;
+    }
   }
+  return { success: true };
+});
+
+// Expose a curated set of local Qwen and Kokoro voices in Settings.
+ipcMain.handle('tts-get-voices', async () => {
+  const qwenVoices = getInstalledQwenVoices();
+  const kokoroVoices = getInstalledKokoroVoices();
+  const voices = [...qwenVoices, ...kokoroVoices];
+  return {
+    success: voices.length > 0,
+    voices: voices.map(({ id }) => id),
+    voiceLabels: Object.fromEntries(voices.map(({ id, label }) => [id, label])),
+    voiceGroups: Object.fromEntries([
+      ...qwenVoices.map(({ id }) => [id, 'Qwen']),
+      ...kokoroVoices.map(({ id }) => [id, 'Kokoro'])
+    ]),
+    error: voices.length > 0 ? undefined : 'No local moderator voices are installed'
+  };
 });
 
 // Ollama API integration for question generation
 ipcMain.handle('generate-question', async (event, transcript) => {
   return new Promise((resolve) => {
     try {
-      console.log('Generating question for transcript:', transcript.substring(0, 100) + '...');
+      const normalizedTranscript = validateTranscript(transcript);
+      console.log('Generating question for transcript:', normalizedTranscript.substring(0, 100) + '...');
       
       const postData = JSON.stringify({
-        model: 'gemma3:1b',
-        prompt: `Based on this demo transcript, generate ONE short, thoughtful question that combines praise with a direct challenge. Start with something positive about their work, then ask a probing question. Keep it under 20 words total.
-
-Use plain text only - no asterisks, no bold, no formatting, no markdown.
-
-Demo transcript: "${transcript}"
-
-Question:`,
-        stream: false
+        model: QUESTION_MODEL,
+        system: ModeratorContent.systemPrompt,
+        prompt: ModeratorContent.questionPrompt(normalizedTranscript),
+        stream: false,
+        think: false,
+        keep_alive: '10m',
+        options: {
+          temperature: 0.6,
+          top_p: 0.9,
+          repeat_penalty: 1.1,
+          num_predict: QUESTION_MAX_TOKENS
+        }
       });
 
       const options = {
@@ -371,8 +901,14 @@ Question:`,
         res.on('end', () => {
           try {
             const response = JSON.parse(data);
-            console.log('Ollama response received:', response.response?.substring(0, 100));
-            resolve({ success: true, question: response.response.trim() });
+            if (res.statusCode !== 200 || response.error) {
+              throw new Error(response.error || (res.statusCode !== 200
+                ? `Ollama returned HTTP ${res.statusCode}`
+                : 'Ollama failed to generate a question'));
+            }
+            const question = validateGeneratedQuestion(response.response);
+            console.log('Ollama response received:', question.substring(0, 100));
+            resolve({ success: true, question, model: QUESTION_MODEL });
           } catch (parseError) {
             console.error('Error parsing Ollama response:', parseError);
             console.error('Raw response:', data);
@@ -386,9 +922,8 @@ Question:`,
         resolve(getFallbackQuestion());
       });
 
-      // Set a simple timeout directly on the request
-      req.setTimeout(30000, () => {
-        console.error('Request to Ollama timed out after 30s');
+      req.setTimeout(QUESTION_TIMEOUT_MS, () => {
+        console.error(`Request to Ollama timed out after ${QUESTION_TIMEOUT_MS / 1000}s`);
         req.destroy();
         resolve(getFallbackQuestion());
       });
@@ -404,45 +939,52 @@ Question:`,
 });
 
 function getFallbackQuestion() {
-  // Fallback questions if Ollama is not available
-  const fallbackQuestions = [
-    "Great work! What's the biggest challenge you faced building this?",
-    "Nice solution! How would this handle 10x more users?",
-    "Impressive demo! What's your biggest concern about this approach?",
-    "Well done! What would you change if rebuilding from scratch?",
-    "Solid work! What assumptions might not hold in production?",
-    "Cool project! What's the riskiest part of your architecture?"
-  ];
-  
-  const randomQuestion = fallbackQuestions[Math.floor(Math.random() * fallbackQuestions.length)];
+  const questions = ModeratorContent.fallbackQuestions;
+  const randomQuestion = questions[Math.floor(Math.random() * questions.length)];
   return { success: true, question: randomQuestion, fallback: true };
 }
 
 // Text-to-Speech implementation
 async function speakText(text, options = {}) {
-  console.log(`Speaking: "${text}" using voice: ${ttsVoice}`);
+  const voice = validateVoice(options.voice || ttsVoice);
+  console.log(`Speaking: "${text}" using voice: ${voice}`);
   
+  if (isQwenVoice(voice)) {
+    return speakWithClonedVoice(text, voice);
+  }
   if (ttsUseKokoro) {
-    return await speakWithKokoro(text, options);
+    return speakWithKokoro(text, { ...options, voice });
   } else {
-    return await speakWithSystem(text, options);
+    return speakWithSystem(text, { ...options, voice });
+  }
+}
+
+async function speakWithClonedVoice(text, voice) {
+  const timestamp = Date.now();
+  const tempAudioPath = path.join(appTempDir, `tts_clone_${timestamp}.wav`);
+  try {
+    await synthesizeWithClonedVoice(text, voice, tempAudioPath);
+    await playAudioFile(tempAudioPath);
+  } finally {
+    try {
+      await fs.promises.unlink(tempAudioPath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.warn('Could not delete cloned voice audio:', error.message);
+      }
+    }
   }
 }
 
 async function speakWithKokoro(text, options = {}) {
   return new Promise((resolve, reject) => {
-    const pythonPath = path.join(__dirname, 'kokoro_env', 'bin', 'python');
+    const pythonPath = getKokoroPythonPath();
     const scriptPath = path.join(__dirname, 'kokoro_tts.py');
     const voice = options.voice || ttsVoice;
     
     // Create temporary file for audio output
-    const tempDir = path.join(__dirname, 'temp');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-    
     const timestamp = Date.now();
-    const tempAudioPath = path.join(tempDir, `tts_${timestamp}.wav`);
+    const tempAudioPath = path.join(appTempDir, `tts_${timestamp}.wav`);
     
     const args = [
       scriptPath,
@@ -533,13 +1075,24 @@ async function speakWithSystem(text, options = {}) {
   });
 }
 
-async function playAudioFile(filePath) {
+async function playAudioFile(filePath, options = {}) {
+  return nativeAudioPlaybackQueue.enqueue(() => playAudioFileNow(filePath, options));
+}
+
+async function playAudioFileNow(filePath, options = {}) {
   return new Promise((resolve, reject) => {
     let command, args;
     
     if (process.platform === 'darwin') {
       command = 'afplay';
-      args = [filePath];
+      if (options.compactTail === true) {
+        const duration = compactWaveDurationSeconds(fs.readFileSync(filePath));
+        args = Number.isFinite(duration)
+          ? ['-t', duration.toFixed(3), filePath]
+          : [filePath];
+      } else {
+        args = [filePath];
+      }
     } else if (process.platform === 'win32') {
       command = 'powershell';
       args = ['-c', `(New-Object Media.SoundPlayer "${filePath}").PlaySync()`];
@@ -577,19 +1130,19 @@ ipcMain.handle('transcribe-audio', async (event, audioBuffer) => {
     throw new Error('Whisper model not ready. Please download the model file.');
   }
 
+  let tempWebmPath;
+  let tempWavPath;
   try {
-    // Create temp directories
-    const tempDir = path.join(__dirname, 'temp');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
+    if (!(audioBuffer instanceof Uint8Array) || audioBuffer.byteLength === 0 || audioBuffer.byteLength > 50 * 1024 * 1024) {
+      throw new Error('Audio data is empty, invalid, or too large');
     }
-    
+
     const timestamp = Date.now();
-    const tempWebmPath = path.join(tempDir, `temp_audio_${timestamp}.webm`);
-    const tempWavPath = path.join(tempDir, `temp_audio_${timestamp}.wav`);
+    tempWebmPath = path.join(appTempDir, `temp_audio_${timestamp}.webm`);
+    tempWavPath = path.join(appTempDir, `temp_audio_${timestamp}.wav`);
     
     // Save WebM audio buffer first
-    fs.writeFileSync(tempWebmPath, audioBuffer);
+    await fs.promises.writeFile(tempWebmPath, audioBuffer);
     
     // Convert WebM to WAV using ffmpeg
     await convertWebmToWav(tempWebmPath, tempWavPath);
@@ -597,18 +1150,21 @@ ipcMain.handle('transcribe-audio', async (event, audioBuffer) => {
     // Use whisper.cpp for transcription
     const transcription = await transcribeWithWhisper(tempWavPath);
     
-    // Clean up temp files
-    if (fs.existsSync(tempWebmPath)) {
-      fs.unlinkSync(tempWebmPath);
-    }
-    if (fs.existsSync(tempWavPath)) {
-      fs.unlinkSync(tempWavPath);
-    }
-    
     return transcription;
   } catch (error) {
     console.error('Error transcribing audio:', error);
     throw error;
+  } finally {
+    const temporaryFiles = [tempWebmPath, tempWavPath, tempWavPath && `${tempWavPath}.txt`].filter(Boolean);
+    await Promise.all(temporaryFiles.map(async (temporaryFile) => {
+      try {
+        await fs.promises.unlink(temporaryFile);
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          console.warn('Could not delete temporary audio file:', error.message);
+        }
+      }
+    }));
   }
 });
 
@@ -719,7 +1275,7 @@ async function transcribeWithWhisper(audioFilePath) {
             console.log('Empty transcription result');
           }
           fs.unlinkSync(txtFile); // Clean up
-          resolve(transcription || 'Empty transcription');
+          resolve(transcription);
         } else {
           // Extract text from stdout
           const lines = output.split('\n');
@@ -740,7 +1296,7 @@ async function transcribeWithWhisper(audioFilePath) {
           
           transcription = transcription.trim();
           console.log('Extracted transcription:', transcription);
-          resolve(transcription || 'No speech detected');
+          resolve(transcription);
         }
       } else {
         reject(new Error(`Whisper failed with code ${code}: ${error}`));

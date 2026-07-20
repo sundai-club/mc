@@ -3,191 +3,278 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'">
     <title>SundAI Club Demo Moderator</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <div class="container">
-        <header>
-            <h1>SundAI Club Demo Moderator</h1>
-            <button id="settingsBtn" class="btn-secondary">Settings</button>
+        <header class="app-header">
+            <div class="brand" aria-label="SundAI Club Demo Moderator">
+                <div class="brand-mark" aria-hidden="true"><span>S</span><i>AI</i></div>
+                <div class="brand-copy">
+                    <span class="brand-eyebrow">SUNDAI.CLUB</span>
+                    <h1>Demo Moderator</h1>
+                </div>
+            </div>
+            <div id="currentHackHeader" class="current-hack-header" data-state="loading" aria-live="polite">
+                <span class="current-hack-label">// CURRENT_HACK</span>
+                <span id="currentPitchEvent" class="current-hack-title">Checking Sundai…</span>
+            </div>
+            <div class="header-actions">
+                <div class="privacy-badge" title="Transcription, questions, and speech run locally">
+                    <span class="status-dot"></span>
+                    <span>LOCAL // PRIVATE</span>
+                </div>
+                <button id="fullscreenBtn" class="icon-button" type="button" title="Exit full screen" aria-label="Exit full screen">
+                    <span id="fullscreenIcon" aria-hidden="true">↙</span>
+                </button>
+                <button id="settingsBtn" class="btn-secondary header-button" type="button">
+                    <span aria-hidden="true">▦</span>
+                    <span>Settings</span>
+                </button>
+            </div>
         </header>
 
         <div class="main-content">
             <main id="timerView" class="view active">
-            <div id="timerDisplay" class="timer-display">
-                <div class="phase-indicator">
-                    <div class="phase-title">
-                        <span id="currentPhase">READY</span>
+                <section id="timerDisplay" class="timer-display" aria-labelledby="currentPhase">
+                    <div id="pitchDebugLine" class="pitch-debug-line" data-state="loading" aria-live="polite">
+                        <span class="pitch-debug-label">// LIVE_PITCH</span>
+                        <span id="currentPitchTitle" class="pitch-debug-title">Checking Sundai…</span>
                     </div>
-                </div>
-                <div class="time-display">
-                    <span id="timeRemaining">00:00</span>
-                </div>
-                <div class="progress-bar">
-                    <div id="progressFill" class="progress-fill"></div>
-                </div>
-                <div class="controls">
-                    <button id="masterRecordBtn" class="btn-record">
-                        <span id="recordIcon" class="btn-icon">🔴</span>
-                        <span id="recordText">Start Demo</span>
-                    </button>
-                    <button id="pauseBtn" class="btn-secondary" disabled>
-                        <span class="btn-icon">⏸️</span>
-                        <span>Pause</span>
-                    </button>
-                    <button id="nextPhaseBtn" class="btn-secondary" disabled>
-                        <span class="btn-icon">▶️</span>
-                        <span id="nextPhaseText">Next Phase</span>
-                    </button>
-                </div>
-            </div>
 
-            <div class="phase-info">
-                <div class="phase-card">
-                    <h3>Demo Phase</h3>
-                    <div class="time-editor" data-phase="demo">
-                        <span id="demoTimeDisplay" class="time-display-text">2:00</span>
-                        <input id="demoTimeInput" class="time-input" type="number" min="1" max="60" style="display: none;">
-                        <span class="time-unit" style="display: none;">min</span>
-                    </div>
-                </div>
-                <div class="phase-card">
-                    <h3>Questions Phase</h3>
-                    <div class="time-editor" data-phase="qa">
-                        <span id="qaTimeDisplay" class="time-display-text">2:00</span>
-                        <input id="qaTimeInput" class="time-input" type="number" min="1" max="60" style="display: none;">
-                        <span class="time-unit" style="display: none;">min</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="recording-section">
-                <div class="video-preview">
-                    <video id="videoPreview" autoplay muted></video>
-                    <div class="camera-selection">
-                        <label for="cameraSelect" class="camera-label">Camera:</label>
-                        <select id="cameraSelect" class="camera-dropdown">
-                            <option value="">Loading cameras...</option>
-                        </select>
-                    </div>
-                    <div class="recording-status">
-                        <div id="recordingIndicator" class="recording-dot"></div>
-                        <span id="recordingStatus">Ready to Start Demo</span>
-                    </div>
-                </div>
-                
-                <!-- Generated Question Display - Now positioned to the right of camera -->
-                <div id="questionDisplay" class="question-display" style="display: none;">
-                    <div class="question-header">
-                        <h3>💡 Suggested Question</h3>
-                        <div class="question-actions">
-                            <button id="readQuestionBtn" class="btn-secondary-small" title="Read question aloud">🔊</button>
-                            <button id="dismissQuestionBtn" class="btn-secondary-small">×</button>
+                    <div class="phase-indicator">
+                        <span class="phase-kicker">// CURRENT_STAGE</span>
+                        <div class="phase-title">
+                            <span class="phase-dot" aria-hidden="true"></span>
+                            <span id="currentPhase">READY</span>
                         </div>
                     </div>
-                    <div class="question-content">
-                        <p id="generatedQuestion"></p>
+
+                    <div class="time-display" aria-live="polite">
+                        <span id="timeRemaining">00:00</span>
                     </div>
-                    <div class="question-footer">
-                        <small id="questionSource">Generated by AI based on demo transcript</small>
+                    <p id="sessionCompleteHint" class="session-complete-hint" aria-live="polite" hidden>
+                        Session complete — Space or Enter to stop &amp; clear.
+                    </p>
+
+                    <div class="progress-track">
+                        <div class="progress-meta">
+                            <span>SESSION_BUFFER</span>
+                            <span class="progress-hint">[ DEMO &gt; Q&amp;A ]</span>
+                        </div>
+                        <div class="progress-bar" role="progressbar" aria-label="Phase progress">
+                            <div id="progressFill" class="progress-fill"></div>
+                        </div>
+                    </div>
+
+                    <div class="controls" aria-label="Session controls">
+                        <button id="masterRecordBtn" class="btn-record" type="button" aria-label="Start demo">
+                            <span id="recordIcon" class="btn-icon" aria-hidden="true">▶</span>
+                            <span id="recordText">Start Demo</span>
+                        </button>
+                        <button id="pauseBtn" class="btn-secondary" type="button" disabled>
+                            <span class="btn-icon" aria-hidden="true">Ⅱ</span>
+                            <span id="pauseText">Pause</span>
+                        </button>
+                        <button id="nextPhaseBtn" class="btn-primary" type="button" disabled>
+                            <span class="btn-icon" aria-hidden="true">→</span>
+                            <span id="nextPhaseText">Next Phase</span>
+                        </button>
+                    </div>
+
+                    <div class="phase-info" aria-label="Configured phase durations">
+                        <div class="phase-card demo-card">
+                            <div class="phase-card-label"><span class="phase-number">01</span> Demo</div>
+                            <div class="time-editor" data-phase="demo">
+                                <span id="demoTimeDisplay" class="time-display-text" title="Click to edit">2:00</span>
+                                <input id="demoTimeInput" class="time-input" type="number" min="1" max="60" aria-label="Demo duration in minutes" style="display: none;">
+                                <span class="time-unit" style="display: none;">min</span>
+                            </div>
+                        </div>
+                        <div class="phase-connector" aria-hidden="true"></div>
+                        <div class="phase-card qa-card">
+                            <div class="phase-card-label"><span class="phase-number">02</span> Q&amp;A</div>
+                            <div class="time-editor" data-phase="qa">
+                                <span id="qaTimeDisplay" class="time-display-text" title="Click to edit">2:00</span>
+                                <input id="qaTimeInput" class="time-input" type="number" min="1" max="60" aria-label="Questions duration in minutes" style="display: none;">
+                                <span class="time-unit" style="display: none;">min</span>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="recording-section" aria-label="Presentation monitor">
+                    <div class="video-preview">
+                        <div class="card-header">
+                            <div>
+                                <span class="section-eyebrow">// PRESENTER_FEED</span>
+                                <h2>Camera preview</h2>
+                            </div>
+                            <div class="recording-status">
+                                <div id="recordingIndicator" class="recording-dot"></div>
+                                <span id="recordingStatus">Ready</span>
+                            </div>
+                        </div>
+                        <div class="video-frame">
+                            <video id="videoPreview" autoplay muted playsinline></video>
+                        </div>
+                        <div class="camera-selection">
+                            <label for="cameraSelect" class="device-label">Camera</label>
+                            <select id="cameraSelect" class="device-dropdown">
+                                <option value="">Loading cameras...</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div id="questionDisplay" class="question-display" style="display: none;">
+                        <div class="question-header">
+                            <div>
+                                <span class="section-eyebrow">// Q&amp;A_ASSIST</span>
+                                <h2>Suggested question</h2>
+                            </div>
+                            <div class="question-actions">
+                                <button id="readQuestionBtn" class="icon-button compact" type="button" title="Read question aloud" aria-label="Read question aloud">▶</button>
+                                <button id="dismissQuestionBtn" class="icon-button compact" type="button" title="Dismiss question" aria-label="Dismiss question">×</button>
+                            </div>
+                        </div>
+                        <div class="question-content">
+                            <p id="generatedQuestion"></p>
+                        </div>
+                        <div class="question-footer">
+                            <span class="status-dot"></span>
+                            <small id="questionSource">Generated locally from the demo transcript</small>
+                        </div>
+                    </div>
+                </section>
+            </main>
+
+            <aside class="transcript-panel">
+                <div class="transcript-header">
+                    <div>
+                        <span class="section-eyebrow">// LIVE_CAPTURE</span>
+                        <h2>Transcript</h2>
+                    </div>
+                    <button id="clearTranscriptBtn" class="text-button" type="button">Clear</button>
+                </div>
+                <div class="mic-selection">
+                    <label for="micSelect" class="device-label">Microphone source</label>
+                    <select id="micSelect" class="device-dropdown">
+                        <option value="">Loading microphones...</option>
+                    </select>
+                </div>
+                <div class="transcript-content">
+                    <div id="transcriptMessages" class="transcript-messages" aria-live="polite">
+                        <div class="transcript-placeholder">
+                            <div class="waveform" aria-hidden="true">
+                                <span></span><span></span><span></span><span></span><span></span>
+                            </div>
+                            <strong>Mic standby</strong>
+                            <p>Listening starts when you start the demo.</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="transcript-footer">
+                    <span class="status-dot"></span>
+                    <span>Whisper runs locally</span>
+                </div>
+            </aside>
+        </div>
+
+        <main id="settingsView" class="view settings-view">
+            <div class="settings-shell">
+                <div class="settings-header">
+                    <button id="backToTimerBtn" class="icon-button" type="button" aria-label="Back to timer">←</button>
+                    <div>
+                        <span class="brand-eyebrow">SUNDAI.OS // WORKSPACE</span>
+                        <h1>Settings</h1>
+                    </div>
+                    <div class="header-spacer"></div>
+                </div>
+
+                <div class="settings-form">
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <span class="settings-icon" aria-hidden="true">◷</span>
+                            <div><h2>Timing</h2><p>Set the pace for each part of the session.</p></div>
+                        </div>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label for="demoMinutes">Demo minutes</label>
+                                <input type="number" id="demoMinutes" min="1" max="60" value="2">
+                            </div>
+                            <div class="form-group">
+                                <label for="qaMinutes">Q&amp;A minutes</label>
+                                <input type="number" id="qaMinutes" min="1" max="60" value="2">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <span class="settings-icon" aria-hidden="true">≋</span>
+                            <div><h2>Transcription</h2><p>Private speech recognition on this Mac.</p></div>
+                        </div>
+                        <div class="form-group compact-group">
+                            <label>Local Whisper model</label>
+                            <div id="whisperStatus" class="whisper-status">
+                                <span id="whisperStatusText">Checking model status...</span>
+                            </div>
+                            <small class="form-help">Audio stays on-device and is removed after processing.</small>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <span class="settings-icon" aria-hidden="true">◖</span>
+                            <div><h2>Announcements</h2><p>Choose how the moderator speaks during transitions.</p></div>
+                        </div>
+                        <div class="settings-controls">
+                            <div class="form-group compact-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="ttsEnabled">
+                                    <span class="toggle-track" aria-hidden="true"><span></span></span>
+                                    <span>Enable spoken announcements</span>
+                                </label>
+                            </div>
+                            <div class="form-group compact-group">
+                                <label for="ttsVoice">Moderator voice</label>
+                                <select id="ttsVoice">
+                                    <option value="cl_frido">Loading local voices...</option>
+                                </select>
+                                <small class="form-help">Choose a curated Qwen or Kokoro voice. Selecting one plays a cached local preview.</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <div class="settings-section-title">
+                            <span class="settings-icon" aria-hidden="true">⌁</span>
+                            <div><h2>Event mode</h2><p>Connect this screen to the live Sundai pitch queue.</p></div>
+                        </div>
+                        <div class="form-group compact-group">
+                            <label class="checkbox-label sundai-mode-toggle">
+                                <input type="checkbox" id="sundaiEnabled" checked>
+                                <span class="toggle-track" aria-hidden="true"><span></span></span>
+                                <span id="sundaiModeLabel">Sundai</span>
+                            </label>
+                            <small class="form-help">Non-Sundai mode stops public API requests and hides hack/project information.</small>
+                        </div>
+                    </div>
+
+                    <div class="form-actions">
+                        <button id="cancelSettingsBtn" class="btn-secondary" type="button">Cancel</button>
+                        <button id="saveSettingsBtn" class="btn-primary" type="button">Save changes</button>
                     </div>
                 </div>
             </div>
         </main>
-
-        <aside class="transcript-panel">
-            <div class="transcript-header">
-                <h3>Live Transcript</h3>
-                <div class="transcript-controls">
-                    <button id="clearTranscriptBtn" class="btn-secondary-small">Clear</button>
-                </div>
-            </div>
-            <div class="mic-selection">
-                <label for="micSelect" class="mic-label">Microphone:</label>
-                <select id="micSelect" class="mic-dropdown">
-                    <option value="">Loading microphones...</option>
-                </select>
-            </div>
-            <div class="transcript-content">
-                <div id="transcriptMessages" class="transcript-messages">
-                    <div class="transcript-placeholder">
-                        <p>Click "Start Demo" to begin recording with live transcription</p>
-                        <p>Local Whisper model will process speech offline</p>
-                    </div>
-                </div>
-            </div>
-        </aside>
     </div>
 
-    <main id="settingsView" class="view">
-            <div class="settings-header">
-                <button id="backToTimerBtn" class="btn-secondary back-btn">← Back</button>
-                <h1>Settings</h1>
-                <div class="header-spacer"></div>
-            </div>
-            <div class="settings-form">
-                
-                <div class="settings-section">
-                    <h3>Timer Settings</h3>
-                    <div class="form-group">
-                        <label for="demoMinutes">Demo Time (minutes):</label>
-                        <input type="number" id="demoMinutes" min="1" max="60" value="2">
-                    </div>
-
-                    <div class="form-group">
-                        <label for="qaMinutes">Questions Time (minutes):</label>
-                        <input type="number" id="qaMinutes" min="1" max="60" value="2">
-                    </div>
-                </div>
-
-                <div class="settings-section">
-                    <h3>Transcription Settings</h3>
-                    <div class="form-group">
-                        <label>Local Whisper Model:</label>
-                        <div id="whisperStatus" class="whisper-status">
-                            <span id="whisperStatusText">Checking model status...</span>
-                        </div>
-                        <small class="form-help">Uses local Whisper model for offline speech-to-text</small>
-                    </div>
-                </div>
-
-                <div class="settings-section">
-                    <h3>Text-to-Speech Settings</h3>
-                    <div class="form-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="ttsEnabled"> Enable timer announcements
-                        </label>
-                        <small class="form-help">Announces timer start, phase changes, and completion</small>
-                    </div>
-                    <div class="form-group">
-                        <label for="ttsVoice">Voice:</label>
-                        <select id="ttsVoice">
-                            <option value="Samantha">Samantha (Default)</option>
-                            <option value="Alex">Alex</option>
-                            <option value="Daniel">Daniel (British)</option>
-                            <option value="Fiona">Fiona (Scottish)</option>
-                            <option value="Karen">Karen (Australian)</option>
-                            <option value="Moira">Moira (Irish)</option>
-                            <option value="Tessa">Tessa (South African)</option>
-                            <option value="Veena">Veena (Indian)</option>
-                            <option value="Albert">Albert</option>
-                            <option value="Fred">Fred</option>
-                            <option value="Ralph">Ralph</option>
-                            <option value="Kathy">Kathy</option>
-                        </select>
-                        <small class="form-help">Choose from high-quality macOS system voices</small>
-                    </div>
-                </div>
-
-                <div class="form-actions">
-                    <button id="saveSettingsBtn" class="btn-primary">Save Settings</button>
-                    <button id="cancelSettingsBtn" class="btn-secondary">Cancel</button>
-                </div>
-            </div>
-        </main>
-    </div>
-
+    <script src="audio-playback-queue.js"></script>
+    <script src="pitch-observation-tracker.js"></script>
+    <script src="moderator-content.js"></script>
     <script src="renderer.js"></script>
 </body>
 </html>

@@ -1,4 +1,6 @@
-const { ipcRenderer } = require('electron');
+const ipcRenderer = window.electronAPI;
+const moderatorContent = window.ModeratorContent;
+const PitchObservationTracker = window.PitchObservationTracker;
 
 class DemoModerator {
     constructor() {
@@ -10,12 +12,13 @@ class DemoModerator {
         this.timer = null;
         this.isPaused = false;
         this.startTimestamp = null;
+        this.completionTimestamp = null;
         this.pausedDuration = 0;
         this.lastPauseTime = null;
-        this.isOvertime = false;
         this.settings = {
             demoTime: 2 * 60,
-            qaTime: 2 * 60
+            qaTime: 2 * 60,
+            sundaiEnabled: true
         };
         
         // Recording properties
@@ -30,6 +33,10 @@ class DemoModerator {
         this.transcriptionRecorder = null;
         this.isTranscribing = false;
         this.transcriptionPaused = false;
+        this.transcriptionProcessing = Promise.resolve();
+        this.transcriptionStopResolvers = [];
+        this.transcriptionStopPending = null;
+        this.transcriptionCyclePhase = null;
         this.isReadingQuestion = false;
         this.transcriptionChunks = [];
         this.whisperReady = false;
@@ -44,39 +51,48 @@ class DemoModerator {
         this.earlyQuestionGenerated = false;
         this.earlyQuestionResult = null;
         this.questionGenerationStarted = false;
+        this.questionGenerationPromise = null;
         this.pregeneratedQuestionAudio = null;
+        this.questionGenerationEpoch = 0;
 
         // Warning properties
         this.twentySecondWarningGiven = false;
 
-        // Auto-transition properties
-        this.autoTransitionTimeout = null;
-        this.autoTransitionTriggered = false;
-
         // Phase transition guard to prevent concurrent transitions
         this.isTransitioning = false;
+        this.phaseRunId = 0;
 
         // Phase completion guard to prevent multiple completions
         this.phaseCompletionTriggered = false;
 
-        // Completion announcement tracking
-        this.sessionCompleteAnnouncementMade = false;
+        this.sessionCompletionPromise = null;
+        this.appClosePromise = null;
+
+        // Public Sundai pitch-feed debug line
+        this.pitchPollTimer = null;
+        this.pitchRefreshPending = false;
+        this.lastPitchSnapshot = null;
+        this.sundaiModeApplied = null;
+        this.pitchObservationTracker = new PitchObservationTracker();
+        this.recordingProjectMetadata = null;
 
         // TTS properties
         this.ttsEnabled = true;
-        this.ttsVoice = 'Samantha';
+        this.ttsVoice = 'cl_frido';
+        this.voiceLabels = {};
+        this.voicePreviewRequestId = 0;
         this.isTTSSpeaking = false;
+        this.audioPlaybackQueue = new AudioPlaybackQueue();
 
         // Pregenerated audio cache
         this.pregeneratedAudioCache = new Map();
         
         this.initializeElements();
         this.setupEventListeners();
+        ipcRenderer.onFullscreenChanged((fullscreen) => this.updateFullscreenControl(fullscreen));
         this.loadSettings();
-        this.initializeMedia();
+        this.initializeMediaDevices();
         this.checkWhisperStatus();
-        this.enumerateMicrophones();
-        this.enumerateCameras();
         this.loadTTSConfig();
 
         // Set initial display and button states
@@ -88,39 +104,23 @@ class DemoModerator {
 
     initializeElements() {
         // Demo completion phrase variants
-        this.demoCompletionPhrases = [
-            "Demo time is up! Great work!",
-            "Fantastic demo! Your time is complete!",
-            "Demo complete! That was impressive!",
-            "Time's up! Excellent presentation!",
-            "Demo finished! Outstanding work!"
-        ];
-
-        this.questionsCompletionPhrases = [
-            "Questions time is up! Thanks for an amazing demo!",
-            "Q&A complete! That was an incredible demo!",
-            "Questions finished! Thank you for such an inspiring demo!",
-            "Time's up! Thanks for that fantastic demonstration!",
-            "Q&A session complete! What an outstanding demo!"
-        ];
-
-        this.sessionCompletionPhrases = [
-            "Demo complete! Time is up!",
-            "Session finished! Great work!",
-            "Demo session complete! Well done!",
-            "Time's up! Excellent demo!",
-            "Demo complete! Outstanding presentation!"
-        ];
+        this.demoCompletionPhrases = moderatorContent.completionPhrases.demo;
+        this.sessionCompletionPhrases = moderatorContent.completionPhrases.session;
+        this.lastCompletionPhraseIndex = { demo: -1, session: -1 };
 
         this.elements = {
             timerDisplay: document.getElementById('timerDisplay'),
             currentPhase: document.getElementById('currentPhase'),
             timeRemaining: document.getElementById('timeRemaining'),
+            sessionCompleteHint: document.getElementById('sessionCompleteHint'),
             progressFill: document.getElementById('progressFill'),
             pauseBtn: document.getElementById('pauseBtn'),
+            pauseText: document.getElementById('pauseText'),
             nextPhaseBtn: document.getElementById('nextPhaseBtn'),
             nextPhaseText: document.getElementById('nextPhaseText'),
             settingsBtn: document.getElementById('settingsBtn'),
+            fullscreenBtn: document.getElementById('fullscreenBtn'),
+            fullscreenIcon: document.getElementById('fullscreenIcon'),
             timerView: document.getElementById('timerView'),
             settingsView: document.getElementById('settingsView'),
             demoTimeDisplay: document.getElementById('demoTimeDisplay'),
@@ -153,21 +153,110 @@ class DemoModerator {
             generatedQuestion: document.getElementById('generatedQuestion'),
             readQuestionBtn: document.getElementById('readQuestionBtn'),
             dismissQuestionBtn: document.getElementById('dismissQuestionBtn'),
-            questionSource: document.getElementById('questionSource')
+            questionSource: document.getElementById('questionSource'),
+            pitchDebugLine: document.getElementById('pitchDebugLine'),
+            currentHackHeader: document.getElementById('currentHackHeader'),
+            currentPitchTitle: document.getElementById('currentPitchTitle'),
+            currentPitchEvent: document.getElementById('currentPitchEvent'),
+            sundaiEnabled: document.getElementById('sundaiEnabled'),
+            sundaiModeLabel: document.getElementById('sundaiModeLabel')
         };
+    }
+
+    initializeSundaiPitchFeed() {
+        if (!this.settings.sundaiEnabled || this.pitchPollTimer) return;
+        void this.refreshSundaiPitch();
+        this.pitchPollTimer = setInterval(() => {
+            void this.refreshSundaiPitch();
+        }, 4_000);
+    }
+
+    async refreshSundaiPitch() {
+        if (!this.settings.sundaiEnabled || this.pitchRefreshPending) return;
+        this.pitchRefreshPending = true;
+
+        try {
+            const result = await ipcRenderer.invoke('get-current-sundai-pitch');
+            if (!this.settings.sundaiEnabled) return;
+            if (!result?.success || !result.pitch) throw new Error('Pitch feed unavailable');
+
+            if (this.isRecording) {
+                this.pitchObservationTracker.observe(result.pitch);
+            }
+            this.lastPitchSnapshot = result.pitch;
+            const hasCurrentProject = Boolean(result.pitch.projectTitle);
+            const projectAuthors = Array.isArray(result.pitch.projectAuthors)
+                ? result.pitch.projectAuthors.filter(Boolean)
+                : [];
+            const pitchByline = projectAuthors.length > 0
+                ? `${result.pitch.projectTitle} by ${projectAuthors.join(', ')}`
+                : result.pitch.projectTitle;
+            this.elements.pitchDebugLine.dataset.state = hasCurrentProject ? 'live' : 'idle';
+            this.elements.currentHackHeader.dataset.state = 'online';
+            this.elements.currentPitchTitle.textContent = hasCurrentProject
+                ? pitchByline
+                : 'No current project';
+            this.elements.currentPitchEvent.textContent = result.pitch.eventTitle;
+            this.elements.currentHackHeader.title = `Current Sundai hack: ${result.pitch.eventTitle}`;
+            this.elements.pitchDebugLine.title = hasCurrentProject
+                ? `Current Sundai pitch: ${pitchByline} — ${result.pitch.eventTitle}`
+                : `No current project selected — ${result.pitch.eventTitle}`;
+        } catch (error) {
+            if (!this.settings.sundaiEnabled) return;
+            this.elements.pitchDebugLine.dataset.state = 'offline';
+            this.elements.currentHackHeader.dataset.state = 'offline';
+            if (this.lastPitchSnapshot) {
+                this.elements.pitchDebugLine.title = 'Showing the last fetched project; Sundai pitch feed is temporarily unavailable';
+                this.elements.currentHackHeader.title = 'Showing the last fetched hack; Sundai pitch feed is temporarily unavailable';
+            } else {
+                this.elements.currentPitchTitle.textContent = 'Pitch feed unavailable';
+                this.elements.currentPitchEvent.textContent = 'Hack unavailable';
+                this.elements.pitchDebugLine.title = 'Could not reach the public Sundai pitch API';
+                this.elements.currentHackHeader.title = 'Could not reach the public Sundai pitch API';
+            }
+        } finally {
+            this.pitchRefreshPending = false;
+        }
+    }
+
+    applySundaiMode() {
+        const enabled = this.settings.sundaiEnabled !== false;
+        const modeChanged = this.sundaiModeApplied !== enabled;
+        this.sundaiModeApplied = enabled;
+        this.elements.currentHackHeader.hidden = !enabled;
+        this.elements.pitchDebugLine.hidden = !enabled;
+        this.updateSundaiModeLabel();
+
+        if (enabled) {
+            if (modeChanged && this.isRecording) this.pitchObservationTracker.start(null);
+            this.initializeSundaiPitchFeed();
+            return;
+        }
+
+        clearInterval(this.pitchPollTimer);
+        this.pitchPollTimer = null;
+        if (modeChanged && this.isRecording) this.pitchObservationTracker.start(null);
+    }
+
+    updateSundaiModeLabel() {
+        const enabled = this.elements.sundaiEnabled?.checked ?? (this.settings.sundaiEnabled !== false);
+        this.elements.sundaiModeLabel.textContent = enabled ? 'Sundai' : 'Non-Sundai';
     }
 
     setupEventListeners() {
         this.elements.pauseBtn.addEventListener('click', () => this.togglePause());
         this.elements.nextPhaseBtn.addEventListener('click', () => this.nextPhase());
         this.elements.settingsBtn.addEventListener('click', () => this.showSettings());
+        this.elements.fullscreenBtn.addEventListener('click', () => this.toggleFullscreen());
         this.elements.saveSettingsBtn.addEventListener('click', () => this.saveSettings());
         this.elements.cancelSettingsBtn.addEventListener('click', () => this.hideSettings());
         this.elements.backToTimerBtn.addEventListener('click', () => this.hideSettings());
         // Master record button
         this.elements.masterRecordBtn.addEventListener('click', () => this.toggleMasterRecording());
         // Transcription event listeners
-        this.elements.clearTranscriptBtn.addEventListener('click', () => this.clearTranscript());
+        this.elements.clearTranscriptBtn.addEventListener('click', () => {
+            void this.clearTranscriptHistory();
+        });
         this.elements.micSelect.addEventListener('change', (e) => this.changeMicrophone(e.target.value));
         // Camera selection event listener
         this.elements.cameraSelect.addEventListener('change', (e) => this.changeCamera(e.target.value));
@@ -175,7 +264,12 @@ class DemoModerator {
         this.elements.readQuestionBtn.addEventListener('click', () => this.readQuestion());
         this.elements.dismissQuestionBtn.addEventListener('click', () => this.dismissQuestion());
         // TTS voice selection event listener
-        this.elements.ttsVoice.addEventListener('change', (e) => this.previewVoice(e.target.value));
+        this.elements.ttsVoice.addEventListener('change', (event) => {
+            if (event.isTrusted) {
+                void this.previewVoice(event.target.value);
+            }
+        });
+        this.elements.sundaiEnabled.addEventListener('change', () => this.updateSundaiModeLabel());
         // Inline time editing event listeners
         this.elements.demoTimeDisplay.addEventListener('click', () => this.startTimeEdit('demo'));
         this.elements.qaTimeDisplay.addEventListener('click', () => this.startTimeEdit('qa'));
@@ -183,6 +277,33 @@ class DemoModerator {
         this.elements.qaTimeInput.addEventListener('blur', () => this.finishTimeEdit('qa'));
         this.elements.demoTimeInput.addEventListener('keydown', (e) => this.handleTimeEditKeydown(e, 'demo'));
         this.elements.qaTimeInput.addEventListener('keydown', (e) => this.handleTimeEditKeydown(e, 'qa'));
+        document.addEventListener('keydown', (event) => this.handleGlobalKeydown(event));
+        ipcRenderer.onAppCloseRequested(() => this.handleAppCloseRequested());
+    }
+
+    handleGlobalKeydown(event) {
+        const isStartKey = event.code === 'Space' || event.key === ' ' || event.key === 'Enter';
+        if (!isStartKey || event.defaultPrevented || event.repeat ||
+            event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+            return;
+        }
+
+        const target = event.target;
+        if (target instanceof Element &&
+            (target.closest('input, textarea, select, button, [contenteditable]') || target.isContentEditable)) {
+            return;
+        }
+
+        const canStartDemo = (this.currentPhase === 'ready' || this.currentPhase === 'completed') &&
+            this.elements.timerView.classList.contains('active') &&
+            !this.elements.masterRecordBtn.disabled;
+        if (!canStartDemo) return;
+
+        event.preventDefault();
+        const startAction = this.toggleMasterRecording();
+        void startAction.catch((error) => {
+            console.error('Keyboard session action failed:', error);
+        });
     }
 
     async loadSettings() {
@@ -191,8 +312,10 @@ class DemoModerator {
             this.settings = settings;
             this.updateTimeDisplays();
             this.updateSettingsInputs();
+            this.applySundaiMode();
         } catch (error) {
             console.error('Failed to load settings:', error);
+            this.applySundaiMode();
         }
     }
 
@@ -200,14 +323,16 @@ class DemoModerator {
         const demoMinutes = parseInt(this.elements.demoMinutes.value);
         const qaMinutes = parseInt(this.elements.qaMinutes.value);
         
-        if (demoMinutes < 1 || qaMinutes < 1) {
-            alert('Please enter valid times (minimum 1 minute)');
+        if (!Number.isInteger(demoMinutes) || !Number.isInteger(qaMinutes) ||
+            demoMinutes < 1 || demoMinutes > 60 || qaMinutes < 1 || qaMinutes > 60) {
+            alert('Please enter whole-minute times between 1 and 60');
             return;
         }
 
         this.settings = {
             demoTime: demoMinutes * 60,
-            qaTime: qaMinutes * 60
+            qaTime: qaMinutes * 60,
+            sundaiEnabled: this.elements.sundaiEnabled.checked
         };
 
         try {
@@ -221,6 +346,7 @@ class DemoModerator {
             
             this.updateTimeDisplays();
             this.updateTranscriptPlaceholder();
+            this.applySundaiMode();
             this.hideSettings();
             if (this.currentPhase === 'ready') {
                 this.updateDisplay();
@@ -234,6 +360,8 @@ class DemoModerator {
     updateSettingsInputs() {
         this.elements.demoMinutes.value = Math.floor(this.settings.demoTime / 60);
         this.elements.qaMinutes.value = Math.floor(this.settings.qaTime / 60);
+        this.elements.sundaiEnabled.checked = this.settings.sundaiEnabled !== false;
+        this.updateSundaiModeLabel();
         this.elements.ttsEnabled.checked = this.ttsEnabled;
         this.elements.ttsVoice.value = this.ttsVoice;
     }
@@ -254,10 +382,28 @@ class DemoModerator {
         this.elements.timerView.classList.add('active');
     }
 
+    async toggleFullscreen() {
+        try {
+            const { fullscreen } = await ipcRenderer.invoke('toggle-fullscreen');
+            this.updateFullscreenControl(fullscreen);
+        } catch (error) {
+            console.error('Failed to toggle full screen:', error);
+        }
+    }
+
+    updateFullscreenControl(fullscreen) {
+        this.elements.fullscreenIcon.textContent = fullscreen ? '↙' : '↗';
+        this.elements.fullscreenBtn.title = fullscreen ? 'Exit full screen' : 'Enter full screen';
+        this.elements.fullscreenBtn.setAttribute('aria-label', this.elements.fullscreenBtn.title);
+    }
+
     prepareTimerForStart() {
         if (this.currentPhase === 'ready' || this.currentPhase === 'completed') {
+            this.audioPlaybackQueue.invalidate();
+            this.invalidateQuestionGeneration();
             this.phaseIndex = 0;
             this.currentPhase = this.phases[0];
+            this.phaseRunId += 1;
             this.timeRemaining = this.settings[this.currentPhase + 'Time'];
             this.totalTime = this.timeRemaining;
 
@@ -265,23 +411,10 @@ class DemoModerator {
             this.demoTranscriptMessages = [];
             this.allTranscriptMessages = [];
 
-            // Reset question generation state for new demo
-            this.earlyQuestionGenerated = false;
-            this.earlyQuestionResult = null;
-            this.questionGenerationStarted = false;
-            this.pregeneratedQuestionAudio = null;
-
             // Reset warning state for new demo
             this.twentySecondWarningGiven = false;
-
             // Reset phase completion flag for new demo
             this.phaseCompletionTriggered = false;
-
-            // Clear auto-transition for new demo
-            this.clearAutoTransition();
-
-            // Reset completion announcement flag
-            this.sessionCompleteAnnouncementMade = false;
 
             // Clear pregenerated audio cache to force regeneration with new time settings
             this.pregeneratedAudioCache.clear();
@@ -289,8 +422,8 @@ class DemoModerator {
             // Prepare UI for demo start but don't start countdown yet
             this.isPaused = false;
             this.elements.pauseBtn.disabled = false;
-            // Only enable Next Phase button during Demo phase
-            this.elements.nextPhaseBtn.disabled = (this.currentPhase !== 'demo');
+            // Keep phase advancement unavailable until recording has actually started.
+            this.elements.nextPhaseBtn.disabled = true;
 
             // Show full time on display (but don't start countdown)
             this.updateDisplay();
@@ -300,6 +433,7 @@ class DemoModerator {
     startTimerCountdown() {
         // Set start timestamp for accurate timing and begin countdown
         this.startTimestamp = Date.now();
+        this.completionTimestamp = null;
         this.pausedDuration = 0;
         this.lastPauseTime = null;
 
@@ -316,8 +450,11 @@ class DemoModerator {
 
     startTimer(skipAnnouncement = false) {
         if (this.currentPhase === 'ready' || this.currentPhase === 'completed') {
+            this.audioPlaybackQueue.invalidate();
+            this.invalidateQuestionGeneration();
             this.phaseIndex = 0;
             this.currentPhase = this.phases[0];
+            this.phaseRunId += 1;
             this.timeRemaining = this.settings[this.currentPhase + 'Time'];
             this.totalTime = this.timeRemaining;
             
@@ -325,23 +462,10 @@ class DemoModerator {
             this.demoTranscriptMessages = [];
             this.allTranscriptMessages = [];
 
-            // Reset question generation state for new demo
-            this.earlyQuestionGenerated = false;
-            this.earlyQuestionResult = null;
-            this.questionGenerationStarted = false;
-            this.pregeneratedQuestionAudio = null;
-
             // Reset warning state for new demo
             this.twentySecondWarningGiven = false;
-
             // Reset phase completion flag for new demo
             this.phaseCompletionTriggered = false;
-
-            // Clear auto-transition for new demo
-            this.clearAutoTransition();
-
-            // Reset completion announcement flag
-            this.sessionCompleteAnnouncementMade = false;
 
             // Clear pregenerated audio cache to force regeneration with new time settings
             this.pregeneratedAudioCache.clear();
@@ -350,17 +474,16 @@ class DemoModerator {
             if (!skipAnnouncement) {
                 const demoMinutes = Math.floor(this.timeRemaining / 60);
                 if (this.currentPhase === 'demo') {
-                    this.speak(`Let's begin your demo! You have ${demoMinutes} minutes to showcase your project.`);
+                    this.speak(moderatorContent.copy.startDemo(demoMinutes));
                 } else {
-                    this.speak(`Time for questions! You have ${demoMinutes} minutes for Q and A.`);
+                    this.speak(moderatorContent.copy.startQuestions(demoMinutes));
                 }
             }
         }
 
         this.isPaused = false;
         this.elements.pauseBtn.disabled = false;
-        // Only enable Next Phase button during Demo phase
-        this.elements.nextPhaseBtn.disabled = (this.currentPhase !== 'demo');
+        this.elements.nextPhaseBtn.disabled = !['demo', 'qa'].includes(this.currentPhase);
 
         // Set start timestamp for accurate timing
         this.startTimestamp = Date.now();
@@ -380,10 +503,10 @@ class DemoModerator {
     togglePause() {
         if (this.isPaused) {
             this.resumeTimer();
-            this.elements.pauseBtn.textContent = 'Pause';
+            this.elements.pauseText.textContent = 'Pause';
         } else {
             this.pause();
-            this.elements.pauseBtn.textContent = 'Resume';
+            this.elements.pauseText.textContent = 'Resume';
         }
     }
 
@@ -403,8 +526,7 @@ class DemoModerator {
         
         this.isPaused = false;
         this.elements.pauseBtn.disabled = false;
-        // Only enable Next Phase button during Demo phase
-        this.elements.nextPhaseBtn.disabled = (this.currentPhase !== 'demo');
+        this.elements.nextPhaseBtn.disabled = !['demo', 'qa'].includes(this.currentPhase);
 
         // Ensure no duplicate timers by clearing any existing interval
         if (this.timer) {
@@ -427,89 +549,105 @@ class DemoModerator {
             return;
         }
         this.isTransitioning = true;
+        this.elements.nextPhaseBtn.disabled = true;
 
         try {
             // If we're in Questions Phase (last phase), complete the session
             if (this.currentPhase === 'qa') {
-                console.log('⏹️ QA phase complete, ending session');
-                await this.speak(this.getRandomCompletionPhrase('questions'));
-                this.completeSession();
+                console.log('⏹️ QA phase complete, ending timed session');
+                await this.completeTimedSession();
                 return;
             }
-
-            // No longer need to handle demo overtime since demo always auto-transitions
 
             if (this.phaseIndex < this.phases.length - 1) {
             const previousPhase = this.currentPhase;
 
             this.phaseIndex++;
             this.currentPhase = this.phases[this.phaseIndex];
+            this.phaseRunId += 1;
+            const transitionRunId = this.phaseRunId;
             this.timeRemaining = this.settings[this.currentPhase + 'Time'];
             this.totalTime = this.timeRemaining;
             console.log('🎯 Phase transition:', previousPhase, '->', this.currentPhase, 'timeRemaining:', this.timeRemaining);
-            this.updateDisplay();
-            
-            // Restart the timer for the new phase
+
+            // Hold the full phase duration while announcements and the local question are prepared.
+            clearInterval(this.timer);
+            this.timer = null;
+            this.startTimestamp = null;
             this.isPaused = false;
-            this.startTimestamp = Date.now();
             this.pausedDuration = 0;
             this.lastPauseTime = null;
-            this.isOvertime = false;
             this.twentySecondWarningGiven = false; // Reset warning for new phase
             this.phaseCompletionTriggered = false; // Reset completion flag for new phase
-            this.elements.pauseBtn.disabled = false;
-            // Only enable Next Phase button during Demo phase
-            this.elements.nextPhaseBtn.disabled = (this.currentPhase !== 'demo');
-
-            // Ensure no duplicate timers by clearing any existing interval
-            if (this.timer) {
-                clearInterval(this.timer);
+            this.elements.pauseBtn.disabled = true;
+            this.updateDisplay();
+            if (this.currentPhase === 'qa') {
+                this.elements.currentPhase.textContent = 'PREPARING Q&A';
             }
-
-            this.timer = setInterval(() => {
-                this.tick();
-            }, 100);
             
             // Special handling for demo to questions transition
             if (previousPhase === 'demo' && this.currentPhase === 'qa' && !skipQuestionGeneration) {
-                // Start question generation immediately while speaking
-                const questionPromise = this.generateQuestion();
+                const questionPromise = this.earlyQuestionGenerated && this.earlyQuestionResult
+                    ? Promise.resolve(this.earlyQuestionResult)
+                    : this.startEarlyQuestionGeneration();
 
-                // Play announcements immediately without delays
-                await this.speak('Starting Question Phase');
-                await this.speak('Let me think of a great question for you...');
-                
-                // Wait for question generation to complete and show/speak it
-                const questionResult = await questionPromise;
-                if (questionResult && questionResult.success) {
-                    this.showQuestion(questionResult.question, questionResult.fallback);
-                    await this.speak(questionResult.question);
+                // Question text and audio are prepared in parallel with these
+                // announcements. Only fill the gap with the thinking line when
+                // the question is genuinely still being prepared.
+                await this.speak(
+                    moderatorContent.copy.startQuestions(Math.floor(this.timeRemaining / 60)),
+                    { compactTail: true }
+                );
+                if (this.phaseRunId !== transitionRunId || this.currentPhase !== 'qa') return;
+                if (!this.earlyQuestionGenerated) {
+                    await this.speak(moderatorContent.copy.thinking, { compactTail: true });
+                    if (this.phaseRunId !== transitionRunId || this.currentPhase !== 'qa') return;
                 }
+
+                const questionResult = await questionPromise;
+                if (this.phaseRunId !== transitionRunId || this.currentPhase !== 'qa') return;
+                this.earlyQuestionResult = questionResult;
+                this.earlyQuestionGenerated = true;
+                await this.generateAndShowQuestion(transitionRunId);
+                if (this.phaseRunId !== transitionRunId || this.currentPhase !== 'qa') return;
             } else {
                 // Announce new phase for all other transitions (unless skipped)
                 if (!skipAnnouncement) {
-                    const phaseNames = {
-                        demo: 'demo',
-                        qa: 'questions'
-                    };
                     // Use clearer announcements
                     if (this.currentPhase === 'demo') {
-                        this.speak(`Let's begin your demo! You have ${Math.floor(this.timeRemaining / 60)} minutes to showcase your project.`);
+                        await this.speak(moderatorContent.copy.startDemo(Math.floor(this.timeRemaining / 60)));
                     } else {
-                        this.speak(`Time for questions! You have ${Math.floor(this.timeRemaining / 60)} minutes for Q and A.`);
+                        await this.speak(moderatorContent.copy.startQuestions(Math.floor(this.timeRemaining / 60)));
                     }
                 }
             }
-        } else {
-            this.completeSession();
+
+            if (this.phaseRunId === transitionRunId && this.currentPhase === this.phases[this.phaseIndex]) {
+                this.elements.pauseBtn.disabled = false;
+                this.updateDisplay();
+                this.startTimerCountdown();
+            }
         }
         } finally {
             // Always reset transition flag
             this.isTransitioning = false;
+            if (this.isRecording && ['demo', 'qa'].includes(this.currentPhase)) {
+                this.elements.nextPhaseBtn.disabled = false;
+            }
         }
     }
 
     tick() {
+        if (this.currentPhase === 'completed' && this.completionTimestamp) {
+            const elapsed = Math.floor((Date.now() - this.completionTimestamp) / 1000);
+            const newTimeRemaining = -elapsed;
+            if (newTimeRemaining !== this.timeRemaining) {
+                this.timeRemaining = newTimeRemaining;
+                this.updateDisplay();
+            }
+            return;
+        }
+
         if (!this.startTimestamp || this.isPaused) {
             return;
         }
@@ -521,9 +659,8 @@ class DemoModerator {
         // Calculate remaining time based on elapsed time
         let newTimeRemaining = this.totalTime - elapsed;
 
-        // For Demo Phase, don't allow negative time (auto-transitions to Q&A)
-        // For Q&A Phase, allow negative time (overtime mode)
-        if (this.currentPhase === 'demo') {
+        // Both timed phases stop at zero.
+        if (this.currentPhase === 'demo' || this.currentPhase === 'qa') {
             newTimeRemaining = Math.max(0, newTimeRemaining);
         }
         
@@ -533,17 +670,17 @@ class DemoModerator {
             this.updateDisplay();
         }
 
-        // Trigger early question generation at 1 minute into demo phase
-        if (this.currentPhase === 'demo' && !this.questionGenerationStarted) {
-            const elapsed = this.totalTime - this.timeRemaining;
-            if (elapsed >= 60) { // 1 minute elapsed
-                this.questionGenerationStarted = true;
-                this.startEarlyQuestionGeneration();
-            }
+        // Start preparing the question and its voice at T-20 seconds so the
+        // prompt benefits from almost the entire demo transcript.
+        if (this.currentPhase === 'demo' &&
+            this.timeRemaining <= 20 &&
+            this.timeRemaining > 0 &&
+            !this.questionGenerationStarted) {
+            void this.startEarlyQuestionGeneration();
         }
 
         // Give 20-second warning for both demo and Q&A phases (trigger at 23 seconds)
-        if ((this.currentPhase === 'demo' || this.currentPhase === 'qa') && !this.twentySecondWarningGiven && !this.isOvertime) {
+        if ((this.currentPhase === 'demo' || this.currentPhase === 'qa') && !this.twentySecondWarningGiven) {
             if (this.timeRemaining <= 23 && this.timeRemaining > 0) {
                 this.twentySecondWarningGiven = true;
                 this.give20SecondWarning();
@@ -551,7 +688,8 @@ class DemoModerator {
         }
 
         // Trigger phase completion when time reaches 0
-        if (this.timeRemaining <= 0 && !this.isOvertime && !this.phaseCompletionTriggered) {
+        if (this.timeRemaining <= 0 &&
+            !this.phaseCompletionTriggered && !this.isTransitioning) {
             this.phaseCompletionTriggered = true;
             console.log('🏁 Phase completion triggered for', this.currentPhase);
 
@@ -559,70 +697,99 @@ class DemoModerator {
                 // Demo phase: immediately transition to Q&A
                 this.phaseComplete().catch(console.error);
             } else if (this.currentPhase === 'qa') {
-                // Q&A phase: enter overtime mode
-                this.isOvertime = true;
+                // Q&A phase: end the timed session without stopping capture.
                 this.phaseComplete().catch(console.error);
             }
         }
     }
 
     async phaseComplete() {
-        // Announce phase completion
-        const phaseNames = {
-            demo: 'demo',
-            qa: 'questions'
-        };
+        const completedPhase = this.currentPhase;
+        const completedPhaseIndex = this.phaseIndex;
+        const completedRunId = this.phaseRunId;
+        const phaseIsStillCurrent = () =>
+            this.phaseRunId === completedRunId &&
+            this.currentPhase === completedPhase &&
+            this.phaseIndex === completedPhaseIndex;
 
-        if (this.currentPhase === 'demo') {
+        if (completedPhase === 'demo') {
+            // Prepare both the question and its voice while the transition
+            // announcements play, including for short or manually-ended demos.
+            this.startEarlyQuestionGeneration();
+
             // For Demo Phase: immediately transition to Q&A
-            await this.speak(this.getRandomCompletionPhrase('demo'));
+            await this.speak(this.getRandomCompletionPhrase('demo'), { compactTail: true });
+            if (!phaseIsStillCurrent()) return;
 
             // Transition immediately to Q&A phase
             await this.nextPhase(false, false); // Don't skip announcement, allow question generation
             return; // Exit early since we've transitioned
-        } else if (this.currentPhase === 'qa') {
-            // For Questions Phase: continue recording in overtime instead of ending session
-            await this.speak(this.getRandomCompletionPhrase('questions'));
-
-            // Continue timer in overtime mode - don't clear interval
-            this.elements.currentPhase.textContent = 'Overtime - Questions Continue';
-            this.elements.pauseBtn.disabled = false; // Keep controls active
-            this.elements.nextPhaseBtn.disabled = false; // Keep Next Phase active to allow manual completion
-            this.elements.nextPhaseText.textContent = 'End Demo'; // Change text to be more clear
-
-            // Keep recording and transcription active
-            return; // Exit early, don't proceed to session completion
-        }
-        
-        if (this.phaseIndex < this.phases.length - 1) {
-            // Check if we're transitioning from demo to questions
-            const isTransitioningFromDemo = (this.currentPhase === 'demo');
-            
-            // Start next phase immediately after demo completion (skip announcement and handle question generation separately)
-            await this.nextPhase(isTransitioningFromDemo, true); // Skip question generation here
-            
-            // Generate question after demo phase (now after questions phase has started)
-            if (isTransitioningFromDemo) {
-                // Brief pause then announce question thinking
-                await new Promise(resolve => setTimeout(resolve, 800));
-                await this.speak('Let me think of a great question for you...');
-                await this.generateAndShowQuestion();
-            }
-        } else {
-            this.completeSession();
+        } else if (completedPhase === 'qa') {
+            await this.completeTimedSession();
+            return;
         }
     }
 
-    async completeSession() {
-        clearInterval(this.timer);
-        this.currentPhase = 'completed';
-        this.updateDisplay(); // Properly update display and remove phase classes
+    completeTimedSession() {
+        if (this.currentPhase === 'completed') {
+            return this.sessionCompletionPromise || Promise.resolve();
+        }
+        if (this.currentPhase !== 'qa') return Promise.resolve();
+        if (this.sessionCompletionPromise) return this.sessionCompletionPromise;
 
-        // Announce demo completion and time is up
-        await this.speak(this.getRandomCompletionPhrase('session'));
+        this.sessionCompletionPromise = (async () => {
+            const completionRunId = ++this.phaseRunId;
+            clearInterval(this.timer);
+            this.timer = null;
+            this.startTimestamp = null;
+            this.completionTimestamp = Date.now();
+            this.timeRemaining = 0;
+            this.isPaused = false;
+            this.currentPhase = 'completed';
+            this.elements.pauseBtn.disabled = true;
+            this.elements.nextPhaseBtn.disabled = true;
+            this.elements.masterRecordBtn.disabled = true;
+            if (document.activeElement?.closest?.('.controls')) {
+                document.activeElement.blur();
+            }
+            // Keep the final generated question visible during overtime. It is
+            // cleared only when the user dismisses it or chooses Stop & Clear.
+            this.updateDisplay();
+            this.updateRecordingStatus();
 
+            this.timer = setInterval(() => this.tick(), 100);
+
+            await this.speak(this.getRandomCompletionPhrase('session'));
+            if (this.phaseRunId !== completionRunId || this.currentPhase !== 'completed') return;
+
+            this.updateCompletedControls();
+        })().finally(() => {
+            this.sessionCompletionPromise = null;
+            if (this.currentPhase === 'completed') {
+                this.updateCompletedControls();
+            }
+        });
+
+        return this.sessionCompletionPromise;
+    }
+
+    updateCompletedControls() {
         this.elements.pauseBtn.disabled = true;
         this.elements.nextPhaseBtn.disabled = true;
+        this.elements.masterRecordBtn.disabled = false;
+        if (this.isRecording) {
+            this.elements.recordIcon.textContent = '■';
+            this.elements.recordText.textContent = 'Stop & Clear';
+            this.elements.masterRecordBtn.classList.remove('btn-record');
+            this.elements.masterRecordBtn.classList.add('btn-stop');
+            this.elements.masterRecordBtn.setAttribute('aria-label', 'Stop and save recording, then clear the completed session');
+        } else {
+            this.elements.recordIcon.textContent = '▶';
+            this.elements.recordText.textContent = 'Start Demo';
+            this.elements.masterRecordBtn.classList.remove('btn-stop');
+            this.elements.masterRecordBtn.classList.add('btn-record');
+            this.elements.masterRecordBtn.setAttribute('aria-label', 'Start the next demo');
+        }
     }
 
     updateDisplay() {
@@ -630,18 +797,24 @@ class DemoModerator {
         this.elements.timerDisplay.classList.remove('demo-phase', 'questions-phase', 'completed');
         
         if (this.currentPhase === 'ready') {
+            this.elements.sessionCompleteHint.hidden = true;
             this.elements.currentPhase.textContent = 'READY';
             this.elements.timeRemaining.textContent = '00:00';
             this.elements.progressFill.style.width = '0%';
             this.updateBackgroundColor('ready');
         } else if (this.currentPhase === 'completed') {
-            this.elements.currentPhase.textContent = 'READY';
-            this.elements.timeRemaining.textContent = '00:00';
+            this.elements.sessionCompleteHint.hidden = false;
+            this.elements.currentPhase.textContent = 'SESSION COMPLETE';
+            this.elements.timeRemaining.textContent = this.formatTime(this.timeRemaining);
             this.elements.progressFill.style.width = '100%';
             this.elements.timerDisplay.classList.add('completed');
-            this.updateBackgroundColor('completed');
+            // Completion is already the start of overtime. Keep the Q&A red
+            // state and begin blinking immediately, including while 00:00 is
+            // displayed during the first elapsed second.
+            this.updateBackgroundColor('overtime');
             // Don't return here, let the button state logic run below
         } else {
+            this.elements.sessionCompleteHint.hidden = true;
             const phaseNames = {
                 demo: 'DEMO TIME',
                 qa: 'Q&A TIME'
@@ -654,22 +827,9 @@ class DemoModerator {
                 this.elements.timerDisplay.classList.add('questions-phase');
             }
             
-            // Override phase name if in Q&A overtime (demo no longer has overtime)
-            if (this.isOvertime && this.currentPhase === 'qa') {
-                this.elements.currentPhase.textContent = 'OVERTIME';
-            } else {
-                this.elements.currentPhase.textContent = phaseNames[this.currentPhase];
-            }
+            this.elements.currentPhase.textContent = phaseNames[this.currentPhase];
             this.elements.timeRemaining.textContent = this.formatTime(this.timeRemaining);
-            
-            // Handle progress calculation for negative time (overtime)
-            let progress;
-            if (this.timeRemaining >= 0) {
-                progress = ((this.totalTime - this.timeRemaining) / this.totalTime) * 100;
-            } else {
-                // In overtime, keep progress at 100%
-                progress = 100;
-            }
+            const progress = ((this.totalTime - this.timeRemaining) / this.totalTime) * 100;
             this.elements.progressFill.style.width = progress + '%';
             
             // Update background color based on timer progress
@@ -678,10 +838,12 @@ class DemoModerator {
         
 
         // Update Next Phase button text based on current state
-        if (this.isOvertime && this.currentPhase === 'qa') {
-            this.elements.nextPhaseText.textContent = 'End Demo';
+        if (this.currentPhase === 'qa') {
+            this.elements.nextPhaseText.textContent = 'Finish Session';
+            this.elements.nextPhaseBtn.setAttribute('aria-label', 'Finish the timed session; recording will continue');
         } else {
             this.elements.nextPhaseText.textContent = 'Next Phase';
+            this.elements.nextPhaseBtn.setAttribute('aria-label', 'Continue to the next phase');
         }
     }
 
@@ -690,9 +852,15 @@ class DemoModerator {
         
         // Remove all timer color classes
         body.classList.remove('timer-green', 'timer-yellow', 'timer-red', 'timer-red-blinking');
+
+        if (state === 'overtime' || state === 'completed') {
+            body.classList.add('timer-red-blinking');
+            return;
+        }
         
-        if (state === 'ready' || state === 'completed') {
-            // Use default background for ready/completed states
+        if (state === 'ready') {
+            // Green is reserved for the ready state before the next presenter.
+            body.classList.add('timer-green');
             return;
         }
         
@@ -728,33 +896,116 @@ class DemoModerator {
         return isNegative ? `-${timeStr}` : timeStr;
     }
 
-    async initializeMedia() {
+    async initializeMediaDevices() {
         try {
-            const constraints = {
-                video: this.selectedCameraId ? 
-                    { deviceId: { exact: this.selectedCameraId }, width: 1280, height: 720 } : 
-                    { width: 1280, height: 720 },
-                audio: this.selectedMicrophoneId ? 
-                    { deviceId: { exact: this.selectedMicrophoneId } } : 
-                    true
-            };
-
-            const stream = await navigator.mediaDevices.getUserMedia(constraints);
-            
-            this.mediaStream = stream;
-            this.elements.videoPreview.srcObject = stream;
-            this.elements.recordingStatus.textContent = 'Ready to Start Demo';
+            const preferences = await ipcRenderer.invoke('load-media-device-preferences');
+            this.selectedCameraId = preferences.cameraId;
+            this.selectedMicrophoneId = preferences.microphoneId;
         } catch (error) {
-            console.error('Error accessing media devices:', error);
-            this.elements.recordingStatus.textContent = 'Camera/Microphone Access Denied';
+            console.error('Failed to load saved media devices:', error);
+        }
+
+        try {
+            const result = await this.initializeMedia({ allowDeviceFallback: true });
+            if (result.usedFallback) {
+                await this.saveMediaDevicePreferences();
+            }
+        } catch (error) {
+            // initializeMedia has already updated the status for the user.
+        } finally {
+            await Promise.allSettled([
+                this.enumerateMicrophones(),
+                this.enumerateCameras()
+            ]);
+        }
+    }
+
+    mediaConstraints(cameraId, microphoneId) {
+        return {
+            video: cameraId
+                ? { deviceId: { exact: cameraId }, width: 1280, height: 720 }
+                : { width: 1280, height: 720 },
+            audio: microphoneId
+                ? { deviceId: { exact: microphoneId } }
+                : true
+        };
+    }
+
+    async initializeMedia({ allowDeviceFallback = false } = {}) {
+        const requestedDevices = {
+            cameraId: this.selectedCameraId,
+            microphoneId: this.selectedMicrophoneId
+        };
+        const candidates = [];
+        const addCandidate = (cameraId, microphoneId) => {
+            if (!candidates.some(candidate =>
+                candidate.cameraId === cameraId && candidate.microphoneId === microphoneId)) {
+                candidates.push({ cameraId, microphoneId });
+            }
+        };
+
+        addCandidate(requestedDevices.cameraId, requestedDevices.microphoneId);
+        if (allowDeviceFallback && requestedDevices.cameraId && requestedDevices.microphoneId) {
+            addCandidate(requestedDevices.cameraId, null);
+            addCandidate(null, requestedDevices.microphoneId);
+        }
+        if (allowDeviceFallback && (requestedDevices.cameraId || requestedDevices.microphoneId)) {
+            addCandidate(null, null);
+        }
+
+        let lastError;
+        for (let index = 0; index < candidates.length; index += 1) {
+            const candidate = candidates[index];
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia(
+                    this.mediaConstraints(candidate.cameraId, candidate.microphoneId)
+                );
+                const previousStream = this.mediaStream;
+
+                this.mediaStream = stream;
+                this.selectedCameraId = candidate.cameraId;
+                this.selectedMicrophoneId = candidate.microphoneId;
+                this.elements.videoPreview.srcObject = stream;
+                this.elements.recordingStatus.textContent = 'Ready to Start Demo';
+
+                if (previousStream && previousStream !== stream) {
+                    previousStream.getTracks().forEach(track => track.stop());
+                }
+
+                return { usedFallback: index > 0 };
+            } catch (error) {
+                lastError = error;
+                const unavailableDevice = [
+                    'NotFoundError',
+                    'OverconstrainedError',
+                    'DevicesNotFoundError'
+                ].includes(error.name);
+                if (!allowDeviceFallback || !unavailableDevice) {
+                    break;
+                }
+            }
+        }
+
+        console.error('Error accessing media devices:', lastError);
+        this.elements.recordingStatus.textContent = this.mediaStream
+            ? 'Ready to Start Demo'
+            : 'Camera/Microphone Access Denied';
+        throw lastError;
+    }
+
+    async saveMediaDevicePreferences() {
+        try {
+            await ipcRenderer.invoke('save-media-device-preferences', {
+                cameraId: this.selectedCameraId,
+                microphoneId: this.selectedMicrophoneId
+            });
+        } catch (error) {
+            console.error('Failed to save media-device choices:', error);
         }
     }
 
     async enumerateMicrophones() {
         try {
-            // Request permissions first
-            await navigator.mediaDevices.getUserMedia({ audio: true });
-            
             const devices = await navigator.mediaDevices.enumerateDevices();
             this.availableMicrophones = devices.filter(device => device.kind === 'audioinput');
             
@@ -816,19 +1067,17 @@ class DemoModerator {
             return;
         }
 
+        const previousMicrophoneId = this.selectedMicrophoneId;
         this.selectedMicrophoneId = deviceId || null;
         
         try {
-            // Stop current stream
-            if (this.mediaStream) {
-                this.mediaStream.getTracks().forEach(track => track.stop());
-            }
-            
             // Reinitialize with new microphone
             await this.initializeMedia();
-            
+            await this.saveMediaDevicePreferences();
             console.log('Switched to microphone:', deviceId || 'default');
         } catch (error) {
+            this.selectedMicrophoneId = previousMicrophoneId;
+            this.elements.micSelect.value = previousMicrophoneId || '';
             console.error('Error changing microphone:', error);
             alert('Failed to switch microphone: ' + error.message);
         }
@@ -836,9 +1085,6 @@ class DemoModerator {
 
     async enumerateCameras() {
         try {
-            // Request permissions first
-            await navigator.mediaDevices.getUserMedia({ video: true });
-            
             const devices = await navigator.mediaDevices.enumerateDevices();
             this.availableCameras = devices.filter(device => device.kind === 'videoinput');
             
@@ -900,19 +1146,17 @@ class DemoModerator {
             return;
         }
 
+        const previousCameraId = this.selectedCameraId;
         this.selectedCameraId = deviceId || null;
         
         try {
-            // Stop current stream
-            if (this.mediaStream) {
-                this.mediaStream.getTracks().forEach(track => track.stop());
-            }
-            
             // Reinitialize with new camera
             await this.initializeMedia();
-            
+            await this.saveMediaDevicePreferences();
             console.log('Switched to camera:', deviceId || 'default');
         } catch (error) {
+            this.selectedCameraId = previousCameraId;
+            this.elements.cameraSelect.value = previousCameraId || '';
             console.error('Error changing camera:', error);
             alert('Failed to switch camera: ' + error.message);
         }
@@ -924,42 +1168,98 @@ class DemoModerator {
             const config = await ipcRenderer.invoke('tts-get-config');
             this.ttsEnabled = config.enabled;
             this.ttsVoice = config.voice;
+            const voicesResult = await ipcRenderer.invoke('tts-get-voices');
+            const voices = voicesResult.success && Array.isArray(voicesResult.voices)
+                ? voicesResult.voices
+                : [];
+            const voiceLabels = voicesResult.success && voicesResult.voiceLabels
+                ? voicesResult.voiceLabels
+                : {};
+            const voiceGroups = voicesResult.success && voicesResult.voiceGroups
+                ? voicesResult.voiceGroups
+                : {};
+            this.voiceLabels = voiceLabels;
+
+            this.elements.ttsVoice.replaceChildren();
+            if (voices.length === 0) {
+                const option = document.createElement('option');
+                option.textContent = 'No local Qwen voices available';
+                option.disabled = true;
+                option.selected = true;
+                this.elements.ttsVoice.appendChild(option);
+                return;
+            }
+
+            if (!voices.includes(this.ttsVoice)) {
+                this.ttsVoice = voices[0];
+                await ipcRenderer.invoke('tts-set-config', {
+                    enabled: this.ttsEnabled,
+                    voice: this.ttsVoice,
+                    useKokoro: config.useKokoro
+                });
+            }
+
+            const groups = new Map();
+            for (const voice of voices) {
+                const groupName = voiceGroups[voice] || 'Local voices';
+                if (!groups.has(groupName)) {
+                    const group = document.createElement('optgroup');
+                    group.label = groupName;
+                    groups.set(groupName, group);
+                    this.elements.ttsVoice.appendChild(group);
+                }
+                const option = document.createElement('option');
+                option.value = voice;
+                option.textContent = voiceLabels[voice] || voice;
+                groups.get(groupName).appendChild(option);
+            }
+            this.updateSettingsInputs();
+            void this.pregenerateVoicePreviews(voices);
         } catch (error) {
             console.error('Error loading TTS config:', error);
+            this.elements.ttsVoice.value = this.ttsVoice;
         }
     }
 
-    async speak(text, options = {}) {
+    speak(text, options = {}) {
+        return this.audioPlaybackQueue.enqueue(() => this.speakNow(text, options));
+    }
+
+    async speakNow(text, options = {}) {
         if (!this.ttsEnabled) return;
 
+        const playbackGeneration = this.audioPlaybackQueue.generation;
+        let wasTranscribing = false;
         try {
             // Check if this is a phrase that has pregenerated audio
             const pregeneratedFile = await this.getPregeneratedAudioFile(text);
             if (pregeneratedFile) {
-                await this.playPregeneratedAudio(pregeneratedFile, text);
+                await this.playPregeneratedAudioNow(pregeneratedFile, text, options);
                 return;
             }
 
             // Pause transcription during TTS to avoid capturing our own speech
-            const wasTranscribing = this.isTranscribing;
+            wasTranscribing = this.isTranscribing;
             if (wasTranscribing) {
                 this.pauseTranscription();
             }
 
             this.isTTSSpeaking = true;
-            await ipcRenderer.invoke('tts-speak', text, options);
-            this.isTTSSpeaking = false;
-
-            // Resume transcription after TTS completes
-            if (wasTranscribing) {
-                // Wait a brief moment for audio to clear, then resume
-                setTimeout(() => {
-                    this.resumeTranscription();
-                }, 500);
+            const result = await ipcRenderer.invoke('tts-speak', text, options);
+            if (!result.success) {
+                throw new Error(result.error || 'TTS failed');
             }
         } catch (error) {
             console.error('TTS Error:', error);
+        } finally {
             this.isTTSSpeaking = false;
+            if (wasTranscribing && playbackGeneration === this.audioPlaybackQueue.generation) {
+                setTimeout(() => {
+                    if (playbackGeneration === this.audioPlaybackQueue.generation) {
+                        this.resumeTranscription();
+                    }
+                }, 500);
+            }
         }
     }
 
@@ -973,42 +1273,10 @@ class DemoModerator {
             return this.pregeneratedAudioCache.get(normalizedText);
         }
 
-        // Generate dynamic time-based phrases
         const demoMinutes = Math.floor(this.settings.demoTime / 60);
         const qaMinutes = Math.floor(this.settings.qaTime / 60);
-
-        const dynamicPhrases = {
-            [`let's begin your demo! you have ${demoMinutes} minutes to showcase your project.`]: `start_demo_${demoMinutes}m.wav`,
-            [`time for questions! you have ${qaMinutes} minutes for q and a.`]: `start_questions_${qaMinutes}m.wav`
-        };
-
-        // Static phrases that don't depend on time
-        const staticPhrases = {
-            'twenty seconds left!': 'twenty_seconds_warning.wav',
-            'twenty seconds remaining': 'twenty_seconds_warning.wav',
-            'demo time is up! great work!': 'demo_complete.wav',
-            'demo phase complete. time is up!': 'demo_complete.wav',
-            'demo complete! time is up!': 'demo_complete_alt.wav',
-            'questions time is up! thanks for an amazing demo!': 'questions_complete.wav',
-            'questions phase complete. time is up! thank you for an awesome demo!': 'questions_complete.wav',
-            'let me think of a great question for you...': 'thinking_question.wav',
-            'let me think about the first question for you...': 'thinking_question.wav',
-            'starting question phase': 'starting_qa_phase.wav'
-        };
-
-        // Check for dynamic phrases first
-        for (const [phrase, filename] of Object.entries(dynamicPhrases)) {
-            if (normalizedText === phrase.toLowerCase()) {
-                // Return the filename immediately (should be pre-generated)
-                this.pregeneratedAudioCache.set(normalizedText, filename);
-                return filename;
-                // Note: If file doesn't exist, playPregeneratedAudio will fall back to TTS
-            }
-        }
-
-        // Check static phrases
-        for (const [phrase, filename] of Object.entries(staticPhrases)) {
-            if (normalizedText === phrase) {
+        for (const { text, filename } of moderatorContent.audioEntries(demoMinutes, qaMinutes)) {
+            if (normalizedText === text.toLowerCase().replace(/\s+/g, ' ').trim()) {
                 this.pregeneratedAudioCache.set(normalizedText, filename);
                 return filename;
             }
@@ -1017,72 +1285,97 @@ class DemoModerator {
         return null;
     }
 
-    async playPregeneratedAudio(filename, originalText = '') {
+    playPregeneratedAudio(filename, originalText = '', options = {}) {
+        return this.audioPlaybackQueue.enqueue(() => this.playPregeneratedAudioNow(filename, originalText, options));
+    }
+
+    async playPregeneratedAudioNow(filename, originalText = '', options = {}) {
+        const playbackGeneration = this.audioPlaybackQueue.generation;
+        const wasTranscribing = this.isTranscribing;
+        const voice = options.voice || this.ttsVoice;
         try {
             // Pause transcription during audio playback to avoid capturing our own speech
-            const wasTranscribing = this.isTranscribing;
             if (wasTranscribing) {
                 this.pauseTranscription();
             }
 
             this.isTTSSpeaking = true;
-            await ipcRenderer.invoke('play-pregenerated-audio', filename);
-            this.isTTSSpeaking = false;
-
-            // Resume transcription after audio completes
-            if (wasTranscribing) {
-                // Wait a brief moment for audio to clear, then resume
-                setTimeout(() => {
-                    this.resumeTranscription();
-                }, 500);
-            }
+            await ipcRenderer.invoke('play-pregenerated-audio', filename, voice, {
+                compactTail: options.compactTail === true
+            });
         } catch (error) {
             console.error('Error playing pregenerated audio:', error);
-            this.isTTSSpeaking = false;
             // Fallback to regular TTS if pregenerated audio fails
             if (originalText) {
-                // Recursively call speak but with cache disabled to avoid infinite loop
-                const wasTranscribing = this.isTranscribing;
-                if (wasTranscribing) {
-                    this.pauseTranscription();
+                const result = await ipcRenderer.invoke('tts-speak', originalText, { voice });
+                if (!result.success) {
+                    throw new Error(result.error || 'TTS fallback failed');
                 }
-
-                this.isTTSSpeaking = true;
-                await ipcRenderer.invoke('tts-speak', originalText);
-                this.isTTSSpeaking = false;
-
-                if (wasTranscribing) {
-                    setTimeout(() => {
+            }
+        } finally {
+            this.isTTSSpeaking = false;
+            if (wasTranscribing && playbackGeneration === this.audioPlaybackQueue.generation) {
+                setTimeout(() => {
+                    if (playbackGeneration === this.audioPlaybackQueue.generation) {
                         this.resumeTranscription();
-                    }, 500);
-                }
+                    }
+                }, 500);
             }
         }
     }
 
     async previewVoice(voiceName) {
         if (!voiceName) return;
-        
+
+        const requestId = ++this.voicePreviewRequestId;
+        const previewText = this.getVoicePreviewText(voiceName);
         try {
-            // Temporarily use the selected voice for preview
-            const originalVoice = this.ttsVoice;
-            this.ttsVoice = voiceName;
-            
-            // Speak a sample phrase with the selected voice
-            await this.speak(`Hello, this is the ${voiceName} voice.`, { voice: voiceName });
-            
-            // Restore original voice (in case user doesn't save)
-            this.ttsVoice = originalVoice;
+            await this.ensureVoicePreview(voiceName, previewText);
+            if (requestId !== this.voicePreviewRequestId) return;
+            await this.playPregeneratedAudio('voice_preview.wav', previewText, { voice: voiceName });
         } catch (error) {
             console.error('Voice preview error:', error);
         }
     }
 
+    getVoicePreviewText(voiceName) {
+        const voiceLabel = this.voiceLabels[voiceName] || voiceName;
+        const speakerName = voiceLabel.split('·')[0].trim();
+        return `Hello, this is ${speakerName}.`;
+    }
+
+    ensureVoicePreview(voiceName, previewText = this.getVoicePreviewText(voiceName)) {
+        return ipcRenderer.invoke(
+            'generate-dynamic-audio',
+            previewText,
+            'voice_preview.wav',
+            voiceName
+        );
+    }
+
+    async pregenerateVoicePreviews(voices) {
+        console.log('Pre-generating Settings voice previews...');
+        for (const voice of voices) {
+            try {
+                await this.ensureVoicePreview(voice);
+                console.log(`✓ Voice preview ready: ${this.voiceLabels[voice] || voice}`);
+            } catch (error) {
+                console.warn(`Failed to pre-generate preview for ${voice}:`, error);
+            }
+        }
+    }
+
     async setTTSConfig(config) {
         try {
+            const previousVoice = this.ttsVoice;
             await ipcRenderer.invoke('tts-set-config', config);
             this.ttsEnabled = config.enabled !== false;
-            this.ttsVoice = config.voice || 'Samantha';
+            this.ttsVoice = config.voice || 'cl_frido';
+            if (this.ttsVoice !== previousVoice) {
+                this.pregeneratedAudioCache.clear();
+                await this.cleanupQuestionAudio();
+                void this.pregenerateAllAudioFiles();
+            }
         } catch (error) {
             console.error('Error setting TTS config:', error);
         }
@@ -1096,9 +1389,12 @@ class DemoModerator {
 
         try {
             this.recordedChunks = [];
-            this.mediaRecorder = new MediaRecorder(this.mediaStream, {
-                mimeType: 'video/webm; codecs=vp9'
-            });
+            this.recordingProjectMetadata = null;
+            const mimeTypes = ['video/webm; codecs=vp9', 'video/webm; codecs=vp8', 'video/webm'];
+            const mimeType = mimeTypes.find((type) => MediaRecorder.isTypeSupported(type));
+            this.mediaRecorder = mimeType
+                ? new MediaRecorder(this.mediaStream, { mimeType })
+                : new MediaRecorder(this.mediaStream);
 
             this.mediaRecorder.ondataavailable = (event) => {
                 if (event.data.size > 0) {
@@ -1106,8 +1402,16 @@ class DemoModerator {
                 }
             };
 
-            this.mediaRecorder.onstop = () => {
-                this.saveRecording();
+            this.mediaRecorder.onstop = async () => {
+                this.isRecording = false;
+                this.updateRecordingStatus();
+                this.recordingProjectMetadata = this.recordingProjectMetadata || this.pitchObservationTracker.finish();
+                await this.saveRecording(this.recordingProjectMetadata);
+                this.recordingProjectMetadata = null;
+                if (this.recordingStopResolve) {
+                    this.recordingStopResolve();
+                    this.recordingStopResolve = null;
+                }
             };
 
             // Determine the current phase for filename
@@ -1115,61 +1419,84 @@ class DemoModerator {
             
             this.mediaRecorder.start();
             this.isRecording = true;
+            this.pitchObservationTracker.start(this.lastPitchSnapshot);
             this.updateRecordingStatus();
             
 
         } catch (error) {
             console.error('Error starting recording:', error);
-            alert('Failed to start recording: ' + error.message);
+            throw error;
         }
     }
 
-    stopRecording() {
+    async stopRecording() {
         if (this.mediaRecorder && this.isRecording) {
+            this.recordingProjectMetadata = this.pitchObservationTracker.finish();
+            const stopped = new Promise((resolve) => {
+                this.recordingStopResolve = resolve;
+            });
             this.mediaRecorder.stop();
             this.isRecording = false;
             this.updateRecordingStatus();
-            
+            await stopped;
         }
     }
 
     updateRecordingStatus() {
         if (this.isRecording) {
             this.elements.recordingIndicator.classList.add('recording');
-            this.elements.recordingStatus.textContent = 'Recording...';
+            this.elements.recordingStatus.textContent = this.currentPhase === 'completed'
+                ? 'Session complete · recording continues'
+                : 'Recording...';
         } else {
             this.elements.recordingIndicator.classList.remove('recording');
-            this.elements.recordingStatus.textContent = 'Ready to Start Demo';
+            this.elements.recordingStatus.textContent = this.currentPhase === 'completed'
+                ? 'Session saved'
+                : 'Ready to Start Demo';
         }
     }
 
     // Master recording toggle - starts/stops everything together
     async toggleMasterRecording() {
-        if (!this.isRecording && (this.currentPhase === 'ready' || this.currentPhase === 'completed')) {
+        if (this.currentPhase === 'completed') {
+            // Completion is a review/overtime state. The first explicit action
+            // always closes that session and returns to Ready; starting the next
+            // demo requires a separate click or key press.
+            await this.stopMasterRecording();
+        } else if (!this.isRecording && this.currentPhase === 'ready') {
             // Start everything: timer, video recording, and transcription
             await this.startMasterRecording();
         } else if (this.isRecording) {
             // Stop everything if currently recording
             await this.stopMasterRecording();
-        } else if (this.currentPhase === 'completed') {
-            // Reset to ready state after completion, then start new demo
-            clearInterval(this.timer);
-            this.currentPhase = 'ready';
-            this.phaseIndex = -1;
-            this.timeRemaining = 0;
-            this.totalTime = 0;
-            this.isPaused = false;
-            this.startTimestamp = null;
-            this.pausedDuration = 0;
-            this.lastPauseTime = null;
-            this.isOvertime = false;
-            this.updateDisplay();
-            // UI already cleared when previous demo completed
-            await this.startMasterRecording();
         } else {
             // Stop everything for any other state
             await this.stopMasterRecording();
         }
+    }
+
+    handleAppCloseRequested() {
+        if (this.appClosePromise) return this.appClosePromise;
+
+        this.appClosePromise = (async () => {
+            this.phaseRunId += 1;
+            this.audioPlaybackQueue.invalidate();
+            this.invalidateQuestionGeneration();
+            clearInterval(this.timer);
+            this.timer = null;
+            clearInterval(this.pitchPollTimer);
+            this.pitchPollTimer = null;
+            this.completionTimestamp = null;
+
+            await this.stopTranscription();
+            await this.stopRecording();
+        })().catch((error) => {
+            console.error('Could not finish saving before app close:', error);
+        }).finally(() => {
+            ipcRenderer.signalAppCloseReady();
+        });
+
+        return this.appClosePromise;
     }
 
     async startMasterRecording() {
@@ -1186,20 +1513,24 @@ class DemoModerator {
         try {
             console.log('🚀 Starting master recording...');
 
-            // UI cleared when previous demo stopped, ready for fresh start
+            // Starting a demo is an explicit reset boundary for the previous transcript.
+            this.demoTranscriptMessages = [];
+            this.allTranscriptMessages = [];
+            this.clearTranscript();
+            this.dismissQuestion();
 
             // Set up the timer display and UI immediately (but don't start countdown yet)
             this.prepareTimerForStart();
 
             // Add loading state to button
-            this.elements.recordIcon.textContent = '⏳';
+            this.elements.recordIcon.textContent = '◆';
             this.elements.recordText.textContent = 'Starting...';
             this.elements.masterRecordBtn.disabled = true;
 
             // Play announcement immediately using pre-generated audio
             const demoMinutes = Math.floor(this.settings.demoTime / 60);
             console.log('🎤 About to speak start announcement...');
-            await this.speak(`Let's begin your demo! You have ${demoMinutes} minutes to showcase your project.`);
+            await this.speak(moderatorContent.copy.startDemo(demoMinutes));
             console.log('✅ Start announcement complete');
 
             // Now start the actual timer countdown
@@ -1215,67 +1546,101 @@ class DemoModerator {
             await this.startTranscription();
 
             // Update UI to final recording state
-            this.elements.recordIcon.textContent = '⏹️';
-            this.elements.recordText.textContent = 'Stop Demo';
+            this.elements.recordIcon.textContent = '■';
+            this.elements.recordText.textContent = 'Stop & Clear';
             this.elements.masterRecordBtn.classList.remove('btn-record');
             this.elements.masterRecordBtn.classList.add('btn-stop');
+            this.elements.masterRecordBtn.setAttribute('aria-label', 'Stop and save recording, then clear the session');
             this.elements.masterRecordBtn.disabled = false;
+            this.elements.nextPhaseBtn.disabled = false;
             
         } catch (error) {
             console.error('Error starting master recording:', error);
             alert('Failed to start recording: ' + error.message);
 
+            await this.stopTranscription();
+            await this.stopRecording();
+            clearInterval(this.timer);
+            this.timer = null;
+            this.currentPhase = 'ready';
+            this.phaseRunId += 1;
+            this.phaseIndex = -1;
+            this.updateDisplay();
+
             // Restore button state on error
-            this.elements.recordIcon.textContent = '🔴';
+            this.elements.recordIcon.textContent = '▶';
             this.elements.recordText.textContent = 'Start Demo';
             this.elements.masterRecordBtn.classList.remove('btn-stop');
             this.elements.masterRecordBtn.classList.add('btn-record');
+            this.elements.masterRecordBtn.setAttribute('aria-label', 'Start demo');
             this.elements.masterRecordBtn.disabled = false;
         }
     }
 
     async stopMasterRecording() {
         try {
-            // Stop transcription
-            this.stopTranscription();
+            // Invalidate any pending phase announcement or question generation immediately.
+            this.phaseRunId += 1;
+            this.audioPlaybackQueue.invalidate();
+            this.invalidateQuestionGeneration();
+            clearInterval(this.timer);
+            this.timer = null;
+            this.startTimestamp = null;
+            this.completionTimestamp = null;
 
-            // Stop video recording
-            this.stopRecording();
+            // Flush the last transcription segment before saving the recording.
+            await this.stopTranscription();
+            await this.stopRecording();
 
-            // Reset question generation state to prevent multiple voices
-            this.earlyQuestionGenerated = false;
-            this.earlyQuestionResult = null;
-            this.questionGenerationStarted = false;
-            this.pregeneratedQuestionAudio = null;
-
-            // Reset warning flags for next demo
+            this.currentPhase = 'ready';
+            this.phaseIndex = -1;
+            this.timeRemaining = 0;
+            this.totalTime = 0;
+            this.isPaused = false;
+            this.pausedDuration = 0;
+            this.lastPauseTime = null;
             this.twentySecondWarningGiven = false;
             this.phaseCompletionTriggered = false;
-
-            // Complete timer session
-            this.completeSession();
-
-            // Clear UI for clean state
-            this.clearTranscript();
             this.dismissQuestion();
-
-            // Update UI
-            this.elements.recordIcon.textContent = '🔴';
+            this.demoTranscriptMessages = [];
+            this.allTranscriptMessages = [];
+            this.clearTranscript();
+            this.updateDisplay();
+            this.updateRecordingStatus();
+            this.elements.pauseBtn.disabled = true;
+            this.elements.nextPhaseBtn.disabled = true;
+            this.elements.recordIcon.textContent = '▶';
             this.elements.recordText.textContent = 'Start Demo';
             this.elements.masterRecordBtn.classList.remove('btn-stop');
             this.elements.masterRecordBtn.classList.add('btn-record');
+            this.elements.masterRecordBtn.setAttribute('aria-label', 'Start demo');
+            this.elements.masterRecordBtn.disabled = false;
             
         } catch (error) {
             console.error('Error stopping master recording:', error);
         }
     }
 
-    generateTranscriptText() {
-        if (this.allTranscriptMessages.length === 0) {
-            return 'No transcript available for this demo.';
+    generateTranscriptText(projectMetadata = null) {
+        const transcriptLines = ['Demo Recording', '='.repeat(50), ''];
+
+        if (projectMetadata?.projectTitle && projectMetadata?.projectUrl) {
+            transcriptLines.push(`Project: ${projectMetadata.projectTitle}`);
+            if (projectMetadata.projectAuthors?.length) {
+                transcriptLines.push(`Authors: ${projectMetadata.projectAuthors.join(', ')}`);
+            }
+            transcriptLines.push(`Project link: ${projectMetadata.projectUrl}`);
+            if (projectMetadata.eventTitle) transcriptLines.push(`Hack: ${projectMetadata.eventTitle}`);
+            if (projectMetadata.eventUrl) transcriptLines.push(`Pitch link: ${projectMetadata.eventUrl}`);
+            transcriptLines.push('');
         }
 
-        const transcriptLines = ['Demo Transcript', '='.repeat(50), ''];
+        transcriptLines.push('Transcript', '-'.repeat(50), '');
+
+        if (this.allTranscriptMessages.length === 0) {
+            transcriptLines.push('No transcript available for this demo.');
+            return transcriptLines.join('\n');
+        }
 
         this.allTranscriptMessages.forEach(msg => {
             const time = new Date(msg.timestamp).toLocaleString();
@@ -1287,7 +1652,7 @@ class DemoModerator {
         return transcriptLines.join('\n');
     }
 
-    async saveRecording() {
+    async saveRecording(projectMetadata = null) {
         if (this.recordedChunks.length === 0) return;
 
         const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
@@ -1299,9 +1664,15 @@ class DemoModerator {
             const uint8Array = new Uint8Array(buffer);
 
             // Generate transcript text
-            const transcriptData = this.generateTranscriptText();
+            const transcriptData = this.generateTranscriptText(projectMetadata);
 
-            const result = await ipcRenderer.invoke('save-recording', filename, uint8Array, transcriptData);
+            const result = await ipcRenderer.invoke(
+                'save-recording',
+                filename,
+                uint8Array,
+                transcriptData,
+                projectMetadata
+            );
             console.log('Recording and transcript saved to:', result.demoFolder);
 
             // Show success message
@@ -1318,31 +1689,6 @@ class DemoModerator {
     }
 
 
-    // Override completeSession to stop recording if active
-    completeSession() {
-        if (this.isRecording) {
-            this.stopRecording();
-        }
-        if (this.isTranscribing) {
-            this.stopTranscription();
-        }
-
-        clearInterval(this.timer);
-        this.currentPhase = 'completed';
-        this.updateDisplay(); // Properly update display and remove phase classes
-
-        // Reset warning flags for next demo
-        this.twentySecondWarningGiven = false;
-        this.phaseCompletionTriggered = false;
-
-        // Clear UI for clean state
-        this.clearTranscript();
-        this.dismissQuestion();
-
-        this.elements.pauseBtn.disabled = true;
-        this.elements.nextPhaseBtn.disabled = true;
-    }
-
     // Transcription methods
 
     async checkWhisperStatus() {
@@ -1352,10 +1698,10 @@ class DemoModerator {
             
             if (this.elements.whisperStatusText) {
                 if (status.ready) {
-                    this.elements.whisperStatusText.textContent = '✅ Model ready for transcription';
+                    this.elements.whisperStatusText.textContent = '[ OK ] Model ready for transcription';
                     this.elements.whisperStatus.className = 'whisper-status ready';
                 } else {
-                    this.elements.whisperStatusText.textContent = '❌ Model not found - check console for setup';
+                    this.elements.whisperStatusText.textContent = '[ !! ] Model not found - check console for setup';
                     this.elements.whisperStatus.className = 'whisper-status not-ready';
                 }
             }
@@ -1365,7 +1711,7 @@ class DemoModerator {
             console.error('Failed to check Whisper status:', error);
             this.whisperReady = false;
             if (this.elements.whisperStatusText) {
-                this.elements.whisperStatusText.textContent = '❌ Error checking model status';
+                this.elements.whisperStatusText.textContent = '[ ERR ] Error checking model status';
                 this.elements.whisperStatus.className = 'whisper-status error';
             }
         }
@@ -1390,9 +1736,10 @@ class DemoModerator {
                 this.transcriptionStream.addTrack(audioTrack);
             }
 
-            this.transcriptionRecorder = new MediaRecorder(this.transcriptionStream, {
-                mimeType: 'audio/webm'
-            });
+            const audioMimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : undefined;
+            this.transcriptionRecorder = audioMimeType
+                ? new MediaRecorder(this.transcriptionStream, { mimeType: audioMimeType })
+                : new MediaRecorder(this.transcriptionStream);
 
             this.transcriptionRecorder.ondataavailable = (event) => {
                 if (event.data.size > 0) {
@@ -1401,64 +1748,111 @@ class DemoModerator {
             };
 
             this.transcriptionRecorder.onstop = () => {
-                this.processTranscription();
+                const chunks = this.transcriptionChunks.splice(0);
+                const capturedPhase = this.transcriptionCyclePhase || this.currentPhase;
+                this.transcriptionCyclePhase = null;
+                this.transcriptionProcessing = this.transcriptionProcessing
+                    .then(() => this.processTranscription(chunks, capturedPhase));
+
+                const resolvers = this.transcriptionStopResolvers.splice(0);
+                this.transcriptionProcessing.finally(() => {
+                    for (const resolve of resolvers) {
+                        resolve();
+                    }
+                });
             };
 
             // Record in 5-second intervals for real-time transcription
-            this.transcriptionRecorder.start();
+            this.startTranscriptionCycle();
             this.transcriptionInterval = setInterval(() => {
                 if (this.isTranscribing && !this.transcriptionPaused && this.transcriptionRecorder.state === 'recording') {
-                    this.transcriptionRecorder.stop();
+                    this.stopTranscriptionCycle();
                     setTimeout(() => {
-                        if (this.isTranscribing && !this.transcriptionPaused) {
-                            this.transcriptionRecorder.start();
+                        if (this.isTranscribing && !this.transcriptionPaused &&
+                            this.transcriptionRecorder.state === 'inactive') {
+                            this.startTranscriptionCycle();
                         }
                     }, 100);
                 }
             }, 5000);
 
             this.isTranscribing = true;
+            this.updateTranscriptPlaceholder();
 
         } catch (error) {
             console.error('Error starting transcription:', error);
-            alert('Failed to start transcription: ' + error.message);
+            throw error;
         }
     }
 
-    stopTranscription() {
-        if (this.transcriptionRecorder && this.isTranscribing) {
-            clearInterval(this.transcriptionInterval);
-            this.transcriptionRecorder.stop();
-            this.isTranscribing = false;
-            this.transcriptionPaused = false;
+    async stopTranscription() {
+        clearInterval(this.transcriptionInterval);
+        this.isTranscribing = false;
+        this.transcriptionPaused = false;
+        this.updateTranscriptPlaceholder();
+
+        if (!this.transcriptionRecorder) {
+            await this.transcriptionProcessing;
+            return;
         }
+
+        await this.stopTranscriptionCycle();
+        await this.transcriptionProcessing;
+    }
+
+    stopTranscriptionCycle() {
+        if (!this.transcriptionRecorder || this.transcriptionRecorder.state !== 'recording') {
+            return this.transcriptionStopPending || this.transcriptionProcessing;
+        }
+
+        const pending = new Promise((resolve) => {
+            this.transcriptionStopResolvers.push(resolve);
+        });
+        this.transcriptionStopPending = pending;
+        pending.finally(() => {
+            if (this.transcriptionStopPending === pending) {
+                this.transcriptionStopPending = null;
+            }
+        });
+        this.transcriptionRecorder.stop();
+        return pending;
+    }
+
+    startTranscriptionCycle() {
+        if (!this.transcriptionRecorder || this.transcriptionRecorder.state !== 'inactive') return;
+        this.transcriptionCyclePhase = this.currentPhase;
+        this.transcriptionRecorder.start();
     }
 
     pauseTranscription() {
         if (this.transcriptionRecorder && this.isTranscribing) {
             clearInterval(this.transcriptionInterval);
-            if (this.transcriptionRecorder.state === 'recording') {
-                this.transcriptionRecorder.stop();
-            }
             this.transcriptionPaused = true;
+            this.updateTranscriptPlaceholder();
+            if (this.transcriptionRecorder.state === 'recording') {
+                this.stopTranscriptionCycle();
+            }
         }
     }
 
     resumeTranscription() {
         if (this.transcriptionPaused && this.isTranscribing) {
+            clearInterval(this.transcriptionInterval);
             this.transcriptionPaused = false;
+            this.updateTranscriptPlaceholder();
             
             // Restart the recording cycle
             if (this.transcriptionRecorder.state === 'inactive') {
-                this.transcriptionRecorder.start();
+                this.startTranscriptionCycle();
             }
             
             this.transcriptionInterval = setInterval(() => {
                 if (this.isTranscribing && !this.transcriptionPaused && this.transcriptionRecorder.state === 'recording') {
-                    this.transcriptionRecorder.stop();
+                    this.stopTranscriptionCycle();
                     setTimeout(() => {
-                        if (this.isTranscribing && !this.transcriptionPaused) {
-                            this.transcriptionRecorder.start();
+                        if (this.isTranscribing && !this.transcriptionPaused &&
+                            this.transcriptionRecorder.state === 'inactive') {
+                            this.startTranscriptionCycle();
                         }
                     }, 100);
                 }
@@ -1466,11 +1860,10 @@ class DemoModerator {
         }
     }
 
-    async processTranscription() {
-        if (this.transcriptionChunks.length === 0) return;
+    async processTranscription(chunks, capturedPhase = this.currentPhase) {
+        if (!chunks || chunks.length === 0) return;
 
-        const blob = new Blob(this.transcriptionChunks, { type: 'audio/webm' });
-        this.transcriptionChunks = [];
+        const blob = new Blob(chunks, { type: 'audio/webm' });
 
         try {
             const buffer = await blob.arrayBuffer();
@@ -1478,32 +1871,35 @@ class DemoModerator {
             const text = await ipcRenderer.invoke('transcribe-audio', uint8Array);
             
             if (text && text.trim()) {
-                this.addTranscriptMessage(text.trim());
+                this.addTranscriptMessage(text.trim(), capturedPhase);
             }
         } catch (error) {
             console.error('Error processing transcription:', error);
         }
     }
 
-    addTranscriptMessage(text) {
+    addTranscriptMessage(text, capturedPhase = this.currentPhase) {
         const timestamp = new Date().toLocaleTimeString();
         const fullTimestamp = new Date().toISOString();
         const messageElement = document.createElement('div');
         messageElement.className = 'transcript-message';
-        messageElement.innerHTML = `
-            <div class="transcript-timestamp">${timestamp}</div>
-            <div class="transcript-text">${text}</div>
-        `;
+        const timestampElement = document.createElement('div');
+        timestampElement.className = 'transcript-timestamp';
+        timestampElement.textContent = timestamp;
+        const textElement = document.createElement('div');
+        textElement.className = 'transcript-text';
+        textElement.textContent = text;
+        messageElement.append(timestampElement, textElement);
 
         // Store all transcript messages with full timestamps
         this.allTranscriptMessages.push({
             timestamp: fullTimestamp,
-            phase: this.currentPhase,
+            phase: capturedPhase,
             text: text
         });
 
         // If we're in demo phase, save this message for question generation
-        if (this.currentPhase === 'demo') {
+        if (capturedPhase === 'demo') {
             this.demoTranscriptMessages.push(text);
         }
 
@@ -1541,12 +1937,41 @@ class DemoModerator {
     }
 
     clearTranscript() {
+        const listening = this.isTranscribing && !this.transcriptionPaused;
+        const paused = this.isTranscribing && this.transcriptionPaused;
+        const statusLabel = listening ? 'Listening // live' : paused ? 'Listening paused' : 'Mic standby';
+        const statusHelp = listening
+            ? 'Capturing speech locally for the live transcript.'
+            : paused
+                ? 'Resume the demo to continue listening.'
+                : 'Listening starts when you start the demo.';
+
         this.elements.transcriptMessages.innerHTML = `
             <div class="transcript-placeholder">
-                <p>Speech-to-text will appear here during recording</p>
+                <div class="waveform${listening ? ' is-listening' : ''}" aria-hidden="true">
+                    <span></span><span></span><span></span><span></span><span></span>
+                </div>
+                <strong>${statusLabel}</strong>
+                <p>${statusHelp}</p>
                 ${!this.whisperReady ? '<p class="api-key-prompt">Local Whisper model loading... Check console for setup instructions</p>' : ''}
             </div>
         `;
+    }
+
+    async clearTranscriptHistory() {
+        const shouldResume = this.isTranscribing && !this.transcriptionPaused;
+        if (this.isTranscribing) {
+            await this.stopTranscriptionCycle();
+        }
+        await this.transcriptionProcessing;
+
+        this.demoTranscriptMessages = [];
+        this.allTranscriptMessages = [];
+        this.clearTranscript();
+
+        if (shouldResume && this.transcriptionRecorder?.state === 'inactive') {
+            this.startTranscriptionCycle();
+        }
     }
 
 
@@ -1567,11 +1992,7 @@ class DemoModerator {
             
             if (!demoTranscript || demoTranscript.trim().length === 0) {
                 console.log('No transcript available for question generation - using fallback');
-                const fallbackQuestions = [
-                    "Great work! What's the biggest challenge you faced building this?",
-                    "Impressive demo! How would you scale this to handle 10x more users?",
-                    "Nice implementation! What's your most controversial design decision here?"
-                ];
+                const fallbackQuestions = moderatorContent.fallbackQuestions;
                 const randomQuestion = fallbackQuestions[Math.floor(Math.random() * fallbackQuestions.length)];
                 return {
                     success: true,
@@ -1598,40 +2019,70 @@ class DemoModerator {
     }
 
     async startEarlyQuestionGeneration() {
-        if (this.earlyQuestionGenerated) return;
+        if (this.earlyQuestionGenerated) return this.earlyQuestionResult;
+        if (this.questionGenerationPromise) return this.questionGenerationPromise;
 
-        console.log('Starting early question generation at 1 minute mark...');
-
-        try {
+        this.questionGenerationStarted = true;
+        console.log('Starting background question and voice generation...');
+        const generationEpoch = this.questionGenerationEpoch;
+        const generationPromise = (async () => {
+          try {
             // Generate question in background without blocking
-            this.earlyQuestionResult = await this.generateQuestion();
+            const result = await this.generateQuestion();
+            if (generationEpoch !== this.questionGenerationEpoch) return null;
+
+            let questionAudio = null;
 
             // Also generate audio for the question if successful
-            if (this.earlyQuestionResult && this.earlyQuestionResult.success && this.earlyQuestionResult.question) {
+            if (result && result.success && result.question) {
                 console.log('Generating audio for question...');
                 try {
-                    const audioResult = await ipcRenderer.invoke('generate-question-audio', this.earlyQuestionResult.question);
+                    const audioResult = await ipcRenderer.invoke('generate-question-audio', result.question);
                     if (audioResult.success) {
-                        this.pregeneratedQuestionAudio = audioResult.filename;
-                        console.log('Question audio generated:', this.pregeneratedQuestionAudio);
+                        questionAudio = audioResult.filename;
                     }
                 } catch (audioError) {
                     console.warn('Failed to generate question audio, will use TTS fallback:', audioError);
-                    this.pregeneratedQuestionAudio = null;
                 }
             }
 
+            if (generationEpoch !== this.questionGenerationEpoch) {
+                if (questionAudio) {
+                    await ipcRenderer.invoke('delete-question-audio', questionAudio).catch(() => {});
+                }
+                return null;
+            }
+
+            this.earlyQuestionResult = result;
+            this.pregeneratedQuestionAudio = questionAudio;
             this.earlyQuestionGenerated = true;
             console.log('Early question generated successfully:', this.earlyQuestionResult);
-        } catch (error) {
+            return this.earlyQuestionResult;
+          } catch (error) {
             console.error('Early question generation failed:', error);
-            this.earlyQuestionResult = null;
-            this.pregeneratedQuestionAudio = null;
-        }
+            if (generationEpoch === this.questionGenerationEpoch) {
+                this.earlyQuestionResult = null;
+                this.pregeneratedQuestionAudio = null;
+            }
+            return null;
+          } finally {
+            if (this.questionGenerationPromise === generationPromise) {
+                this.questionGenerationPromise = null;
+            }
+          }
+        })();
+
+        this.questionGenerationPromise = generationPromise;
+        return generationPromise;
     }
 
-    async generateAndShowQuestion() {
+    async generateAndShowQuestion(expectedPhaseRunId = null) {
+        const phaseIsStillCurrent = () =>
+            expectedPhaseRunId == null ||
+            (this.phaseRunId === expectedPhaseRunId && this.currentPhase === 'qa');
+
         try {
+            if (!phaseIsStillCurrent()) return;
             let result;
 
             // Use pre-generated question if available, otherwise generate new one
@@ -1641,36 +2092,39 @@ class DemoModerator {
             } else {
                 console.log('No pre-generated question available, generating new one...');
                 result = await this.generateQuestion();
-
-                // Generate audio for the new question
-                if (result && result.success && result.question) {
-                    console.log('Generating audio for new question...');
-                    try {
-                        const audioResult = await ipcRenderer.invoke('generate-question-audio', result.question);
-                        if (audioResult.success) {
-                            this.pregeneratedQuestionAudio = audioResult.filename;
-                            console.log('New question audio generated:', this.pregeneratedQuestionAudio);
-                        }
-                    } catch (audioError) {
-                        console.warn('Failed to generate new question audio, will use TTS fallback:', audioError);
-                        this.pregeneratedQuestionAudio = null;
-                    }
-                }
+                if (!phaseIsStillCurrent()) return;
             }
 
             if (result && result.success && result.question) {
+                if (!this.pregeneratedQuestionAudio) {
+                    try {
+                        const audioResult = await ipcRenderer.invoke('generate-question-audio', result.question);
+                        if (!phaseIsStillCurrent()) return;
+                        if (audioResult.success) {
+                            this.pregeneratedQuestionAudio = audioResult.filename;
+                        }
+                    } catch (audioError) {
+                        console.warn('Failed to generate question audio, will use TTS fallback:', audioError);
+                    }
+                }
+
                 // Display the question
+                if (!phaseIsStillCurrent()) return;
                 this.showQuestion(result.question, result.fallback);
 
                 // Voice the question using pregenerated audio if available
-                await new Promise(resolve => setTimeout(resolve, 1000)); // Brief pause
+                // A short beat keeps the spoken handoff natural without adding
+                // a noticeable second of dead air after all preparation is done.
+                await new Promise(resolve => setTimeout(resolve, 250));
+                if (!phaseIsStillCurrent()) return;
 
                 if (this.pregeneratedQuestionAudio) {
                     console.log('Using question audio:', this.pregeneratedQuestionAudio);
                     try {
-                        await this.playPregeneratedAudio(this.pregeneratedQuestionAudio, result.question, true);
+                        await this.playPregeneratedAudio(this.pregeneratedQuestionAudio, result.question);
+                        if (!phaseIsStillCurrent()) return;
                         // Clean up the audio file after use
-                        this.cleanupQuestionAudio();
+                        await this.cleanupQuestionAudio();
                     } catch (error) {
                         console.warn('Failed to play question audio, falling back to TTS:', error);
                         await this.speak(result.question, { isQAQuestion: true });
@@ -1693,9 +2147,9 @@ class DemoModerator {
 
     showQuestion(question, isFallback = false) {
         this.elements.generatedQuestion.textContent = question;
-        this.elements.questionSource.textContent = isFallback ? 
-            'Generated by fallback (Ollama not available)' : 
-            'Generated by AI based on demo transcript';
+        this.elements.questionSource.textContent = isFallback ?
+            'Built-in backup question' :
+            'Generated locally from the demo transcript';
         this.elements.questionDisplay.style.display = 'block';
     }
 
@@ -1728,16 +2182,18 @@ class DemoModerator {
             case 'demo':
                 phrases = this.demoCompletionPhrases;
                 break;
-            case 'questions':
-                phrases = this.questionsCompletionPhrases;
-                break;
             case 'session':
                 phrases = this.sessionCompletionPhrases;
                 break;
             default:
                 phrases = this.sessionCompletionPhrases;
         }
-        const randomIndex = Math.floor(Math.random() * phrases.length);
+        const phraseType = type === 'demo' ? 'demo' : 'session';
+        const randomIndex = moderatorContent.chooseNonRepeatingIndex(
+            phrases.length,
+            this.lastCompletionPhraseIndex[phraseType]
+        );
+        this.lastCompletionPhraseIndex[phraseType] = randomIndex;
         return phrases[randomIndex];
     }
 
@@ -1843,60 +2299,25 @@ class DemoModerator {
 
     async pregenerateAllAudioFiles() {
         try {
+            const voice = this.ttsVoice;
             const demoMinutes = Math.floor(this.settings.demoTime / 60);
             const qaMinutes = Math.floor(this.settings.qaTime / 60);
 
-            // Dynamic phrases that depend on time settings
-            const dynamicPhrases = [
-                { text: `Let's begin your demo! You have ${demoMinutes} minutes to showcase your project.`, filename: `start_demo_${demoMinutes}m.wav` },
-                { text: `Time for questions! You have ${qaMinutes} minutes for Q and A.`, filename: `start_questions_${qaMinutes}m.wav` }
-            ];
-
-            // Static phrases that never change
-            const staticPhrases = [
-                { text: 'Twenty seconds left!', filename: 'twenty_seconds_warning.wav' },
-                { text: 'Demo time is up! Great work!', filename: 'demo_complete.wav' },
-                { text: 'Demo complete! Time is up!', filename: 'demo_complete_alt.wav' },
-                { text: 'Questions time is up! Thanks for an amazing demo!', filename: 'questions_complete.wav' },
-                { text: 'Let me think of a great question for you...', filename: 'thinking_question.wav' },
-                { text: 'Starting Question Phase', filename: 'starting_qa_phase.wav' }
-            ];
+            const phrases = moderatorContent.audioEntries(demoMinutes, qaMinutes);
 
             console.log('Pre-generating audio files for immediate playback...');
 
-            // Pre-generate all dynamic audio files
-            for (const { text, filename } of dynamicPhrases) {
+            for (const { text, filename } of phrases) {
                 try {
-                    // Cache the filename immediately for instant lookup
                     const normalizedText = text.toLowerCase().replace(/\s+/g, ' ').trim();
                     this.pregeneratedAudioCache.set(normalizedText, filename);
 
-                    // Generate the actual audio file
-                    const result = await ipcRenderer.invoke('generate-dynamic-audio', text, filename);
+                    const result = await ipcRenderer.invoke('generate-dynamic-audio', text, filename, voice);
                     if (result.success) {
-                        console.log(`✓ Pre-generated dynamic audio: ${filename}`);
+                        console.log(`✓ Pre-generated moderator audio: ${filename}`);
                     }
                 } catch (error) {
                     console.warn(`Failed to pre-generate ${filename}:`, error);
-                    // Keep the cache entry so it tries to play and falls back to TTS gracefully
-                }
-            }
-
-            // Pre-generate all static audio files
-            for (const { text, filename } of staticPhrases) {
-                try {
-                    // Cache the filename immediately for instant lookup
-                    const normalizedText = text.toLowerCase().replace(/\s+/g, ' ').trim();
-                    this.pregeneratedAudioCache.set(normalizedText, filename);
-
-                    // Generate the actual audio file
-                    const result = await ipcRenderer.invoke('generate-dynamic-audio', text, filename);
-                    if (result.success) {
-                        console.log(`✓ Pre-generated static audio: ${filename}`);
-                    }
-                } catch (error) {
-                    console.warn(`Failed to pre-generate ${filename}:`, error);
-                    // Keep the cache entry so it tries to play and falls back to TTS gracefully
                 }
             }
 
@@ -1906,46 +2327,42 @@ class DemoModerator {
         }
     }
 
-    cleanupQuestionAudio() {
-        // Reset the pregenerated audio filename after use
-        // The actual file cleanup will be handled by the main process if needed
+    async cleanupQuestionAudio() {
+        const filename = this.pregeneratedQuestionAudio;
         this.pregeneratedQuestionAudio = null;
+        if (filename) {
+            try {
+                await ipcRenderer.invoke('delete-question-audio', filename);
+            } catch (error) {
+                console.warn('Could not delete generated question audio:', error);
+            }
+        }
+    }
+
+    invalidateQuestionGeneration() {
+        this.questionGenerationEpoch += 1;
+        const filename = this.pregeneratedQuestionAudio;
+        this.earlyQuestionGenerated = false;
+        this.earlyQuestionResult = null;
+        this.questionGenerationStarted = false;
+        this.questionGenerationPromise = null;
+        this.pregeneratedQuestionAudio = null;
+        if (filename) {
+            ipcRenderer.invoke('delete-question-audio', filename).catch((error) => {
+                console.warn('Could not delete stale question audio:', error);
+            });
+        }
     }
 
     async give20SecondWarning() {
         console.log('Giving 20-second warning');
         try {
-            await this.speak('Twenty seconds left!');
+            await this.speak(moderatorContent.copy.warning);
         } catch (error) {
             console.error('Error giving 20-second warning:', error);
         }
     }
 
-    setupAutoTransition() {
-        // Clear any existing timeout
-        if (this.autoTransitionTimeout) {
-            clearTimeout(this.autoTransitionTimeout);
-        }
-
-        console.log('Setting up auto-transition to Q&A in 10 seconds');
-
-        // Set up 10-second auto-transition to Q&A
-        this.autoTransitionTimeout = setTimeout(async () => {
-            if (this.currentPhase === 'demo' && this.isOvertime && !this.autoTransitionTriggered) {
-                this.autoTransitionTriggered = true;
-                console.log('Auto-transitioning to Q&A phase');
-                await this.nextPhase();
-            }
-        }, 10000); // 10 seconds
-    }
-
-    clearAutoTransition() {
-        if (this.autoTransitionTimeout) {
-            clearTimeout(this.autoTransitionTimeout);
-            this.autoTransitionTimeout = null;
-        }
-        this.autoTransitionTriggered = false;
-    }
 }
 
 document.addEventListener('DOMContentLoaded', () => {

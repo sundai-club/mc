@@ -6,16 +6,22 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
+    "test": "node --test",
     "download-model": "node download-model.js",
-    "setup": "npm install && npm run download-model"
+    "setup-tts": "node setup-tts.js",
+    "setup-cloned-voice": "node setup-cloned-voice.js",
+    "pull-question-model": "ollama pull qwen3.5:4b-mlx",
+    "setup": "npm install && npm run download-model && npm run setup-tts && npm run pull-question-model && npm run setup-cloned-voice"
   },
-  "keywords": ["electron", "demo", "timer", "moderator"],
+  "keywords": [
+    "electron",
+    "demo",
+    "timer",
+    "moderator"
+  ],
   "author": "Demo App",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^27.0.0"
-  },
-  "dependencies": {
-    "wav": "^1.0.2"
+    "electron": "^43.1.1"
   }
 }

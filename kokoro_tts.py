@@ -24,8 +24,16 @@ def get_model_paths():
     """Get the paths to the Kokoro model files"""
     # Check both possible locations
     base_dir = Path(__file__).parent
+    app_models_dir = base_dir / "models" / "kokoro"
     kokoro_env_dir = base_dir / "kokoro_env"
     kokoro_models_dir = kokoro_env_dir / "kokoro_models"
+
+    # Keep model weights outside the virtualenv so the environment is replaceable.
+    model_path = app_models_dir / "kokoro-v1.0.onnx"
+    voices_path = app_models_dir / "voices-v1.0.bin"
+
+    if model_path.exists() and voices_path.exists():
+        return str(model_path), str(voices_path)
     
     # Try kokoro_models directory first
     model_path = kokoro_models_dir / "kokoro-v1.0.onnx"
